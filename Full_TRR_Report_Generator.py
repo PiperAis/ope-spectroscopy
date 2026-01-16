@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 import numpy as np
+from scipy.optimize import curve_fit
 import os
 from os.path import dirname, join, basename, isfile
 from os import listdir
@@ -138,57 +139,83 @@ def subtract_decay(filepath):
     min_time = data_array.time.values[data_array.argmax()]
     # min_time = 5
     max_time = data_array.time.values.max()
+    max_time = 75
     # masked_da = pp.mask_data_array(data_array, min_time, max_time)
     masked_da = data_array.copy()
     masked_da = masked_da.where(data_array.time >= min_time)
-    masked_values = masked_da.values
+    masked_da = masked_da.where(data_array.time <= max_time)
+    masked_values = masked_da.values.copy()
 
     # Identify masked positions/indices
-    masked_positions = np.isnan(masked_values)
+    mask = np.isnan(masked_values)
 
-    # Fit and subtract exponential decay
+    # Get an array of the masked values and times with the NaNs dropped
+    masked_values = masked_values[~mask]
+    masked_times = masked_da.time.values[~mask]
+
+    # Fit exponential decay to masked data, or subtract data avg if fit fails.
+    initial_guess = [masked_values[0], 0.01, np.mean(masked_values)]
+
     try:
-        fit_results = pp.subtract_exponential_decay(masked_da.time.values, masked_values, time_constant = 0.01)
-        subtracted_data = fit_results[0]
-        subtracted_data -= np.nanmean(subtracted_data)
-        time_constant = fit_results[1]
-    except Exception:
-        print('Exponential fit failed, subtracting DC component.')
-        subtracted_data = original_values - np.nanmean(original_values)
+        params, _ = curve_fit(pp.exp_decay, 
+                            masked_da.time, 
+                            masked_da.values, 
+                            p0=initial_guess, 
+                            nan_policy='omit')
+        
+        fit_da = xr.DataArray(
+            pp.exp_decay(data_array.time.values, *params),
+            dims = data_array.dims,
+            coords = data_array.coords,
+            attrs = data_array.attrs, 
+            name = 'fit')
+        
+        processed_masked = xr.DataArray(
+            original_values - fit_da.values,
+            dims = data_array.dims,
+            coords = data_array.coords,
+            attrs = data_array.attrs, 
+            name = 'subtracted wonk'
+        )
+
+        fitted_data_array = processed_masked.where(data_array.time.values >= min_time)
+        subtracted_data = fitted_data_array.values.copy()
+
+        time_constant = params[0]
+
+    except RuntimeError:
+        print("Curve fit was unsuccessful. Subtracting DC component instead.")
+        subtracted_data = masked_values - np.mean(masked_values)
         time_constant = 0
-
-    # Reinsert original (removed) parts into the processed result
-    final_values = subtracted_data.copy()
-    if masked_positions.any():
-        final_values[masked_positions] = original_values[masked_positions]
-
-    # Update values of data array
-    print(f"The original values: {len(original_values)}. The final values: {len(final_values)}")
+    
+    # residual_values = masked_fit - masked_values
 
     # Create data array with subtracted data
     processed_data = xr.DataArray(
-        final_values,
+        subtracted_data,
         dims = data_array.dims,
         coords = data_array.coords,
         attrs = data_array.attrs,
         name = 'processed'
     )
+
+    processed_data.plot() #type: ignore
     
     # Add time constant of subtracted decay to attributes
     processed_data.attrs['time_constant'] = time_constant
 
-    # Create a residual array
-    residual_array = xr.DataArray(
-        original_values - masked_values,
-        dims=data_array.dims,
-        coords=data_array.coords,
-        attrs=data_array.attrs,
-        name='residuals'
-    )
+    # # Create a residual array
+    # residual_array = xr.DataArray(
+    #     residuals,
+    #     dims=data_array.dims,
+    #     coords=data_array.coords,
+    #     attrs=data_array.attrs,
+    #     name='residuals'
+    # )
 
     # Add subtracted data and residuals to dataset
     dataset['subtracted'] = processed_data
-    dataset['residuals'] = residual_array
+    # dataset['residuals'] = residual_array
     dataset.attrs['time_constant'] = time_constant
 
     # Generate save path
@@ -198,7 +225,7 @@ def subtract_decay(filepath):
     # Save dataset
     dataset.to_netcdf(path = save_path, mode = 'a')
 
-    return [data_array, residual_array]
+    return [data_array]
 
 
 # Create directory paths from config file and experiment date
