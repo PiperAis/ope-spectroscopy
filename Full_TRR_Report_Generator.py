@@ -107,15 +107,17 @@ def run_noise_removal_process(filepath):
     
     return None
 
-def subtract_decay(filepath):
+def subtract_decay(filepath : str):
     """ Takes a filepath (expects .nc filetype).
-    Returns a list:
-    [subtracted data (dataArray), residuals (dataArray)]
+    Fits data with an exponential decay after masking to exclude
+    pre-time zero data.
 
     Saves the processed data to existing dataset and adds the decay
     constant of the fit as an attribute of the dataset.
     """
     dataset = xr.open_dataset(filepath)
+    set_number = basename(filepath).split(".nc")[0]
+    plot_save_path = f"{join(plots_dir, set_number)}-subtracted.png"
 
     # Load dataset into memory so .values is available, then close file to allow overwrite
     dataset.load()
@@ -128,8 +130,6 @@ def subtract_decay(filepath):
         "data saved correctly during the normalization step. Canceling subtraction step.")
         return None
 
-    # print(f"Data array attributes are {data_array.attrs}")
-
     data_array = data_array.sel(time=~data_array.get_index("time").duplicated())
 
     # Keep a copy of the original values to restore masked regions later
@@ -137,13 +137,12 @@ def subtract_decay(filepath):
 
     # Mask the data 
     min_time = data_array.time.values[data_array.argmax()]
-    # min_time = 5
     max_time = data_array.time.values.max()
-    max_time = 75
-    # masked_da = pp.mask_data_array(data_array, min_time, max_time)
+
     masked_da = data_array.copy()
     masked_da = masked_da.where(data_array.time >= min_time)
     masked_da = masked_da.where(data_array.time <= max_time)
+
     masked_values = masked_da.values.copy()
 
     # Identify masked positions/indices
@@ -166,18 +165,18 @@ def subtract_decay(filepath):
         fit_da = xr.DataArray(
             pp.exp_decay(data_array.time.values, *params),
             dims = data_array.dims,
-            coords = data_array.coords,
-            attrs = data_array.attrs, 
+            coords = data_array.coords, 
             name = 'fit')
         
+        # Subtract fit from the original data, unmasked.
         processed_masked = xr.DataArray(
             original_values - fit_da.values,
             dims = data_array.dims,
             coords = data_array.coords,
-            attrs = data_array.attrs, 
             name = 'subtracted wonk'
         )
 
+        # Reapply mask for times before t0.
         fitted_data_array = processed_masked.where(data_array.time.values >= min_time)
         subtracted_data = fitted_data_array.values.copy()
 
@@ -187,8 +186,6 @@ def subtract_decay(filepath):
         print("Curve fit was unsuccessful. Subtracting DC component instead.")
         subtracted_data = masked_values - np.mean(masked_values)
         time_constant = 0
-    
-    # residual_values = masked_fit - masked_values
 
     # Create data array with subtracted data
     processed_data = xr.DataArray(
@@ -199,23 +196,22 @@ def subtract_decay(filepath):
         name = 'processed'
     )
 
-    processed_data.plot() #type: ignore
+    plt.figure(figsize=(10, 5))
+    plt.plot(data_array.time, processed_data)
+    plt.xlabel("Time (ps)")
+    plt.ylabel("Differential reflectance")
+    plt.title(f"{set_number} Decay Subtracted")
+    plt.savefig(fname = f"{plot_save_path}")
+    plt.show()
+
+    plot_rel_path = f"..{plot_save_path.split(r"TRR")[-1]}"
+    pp.update_report(report_file, data_array.attrs['raw data filename'], section = "processed", plot_path = f"{plot_rel_path}")
     
     # Add time constant of subtracted decay to attributes
     processed_data.attrs['time_constant'] = time_constant
 
-    # # Create a residual array
-    # residual_array = xr.DataArray(
-    #     residuals,
-    #     dims=data_array.dims,
-    #     coords=data_array.coords,
-    #     attrs=data_array.attrs,
-    #     name='residuals'
-    # )
-
-    # Add subtracted data and residuals to dataset
+    # Add subtracted data to dataset
     dataset['subtracted'] = processed_data
-    # dataset['residuals'] = residual_array
     dataset.attrs['time_constant'] = time_constant
 
     # Generate save path
@@ -225,7 +221,7 @@ def subtract_decay(filepath):
     # Save dataset
     dataset.to_netcdf(path = save_path, mode = 'a')
 
-    return [data_array]
+    return processed_data
 
 
 # Create directory paths from config file and experiment date
