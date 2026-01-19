@@ -26,26 +26,28 @@ import os
 from os.path import dirname, join, basename, isfile
 from os import listdir
 import pandas as pd
+import pathlib
+from pathlib import Path
 import sys
 import xarray as xr
 
 # Add code directory to system path to import custom modules.
 
-THIS_DIR = dirname(__file__)
-sys.path.append(THIS_DIR)
+THIS_DIR = Path(__file__).parent
+sys.path.append(str(THIS_DIR))
 
 # Import custom modules
 
 import processing_package as pp
 import config
 
-def run_noise_removal_process(filepath):
-    filename = basename(filepath)
+def run_noise_removal_process(filepath : Path):
+    filename = filepath.name
     set_number = filename.split('-')[0]
-    plot_save_path = f"{join(plots_dir, set_number)}-noiseremoved.png"
+    plot_save_path = plots_dir / f"{set_number}-noiseremoved.png"
 
     # Create a data array
-    data_array = pp.prepare_data_array(filepath, inputtype='TimeSpec')
+    data_array = pp.prepare_data_array(str(filepath), inputtype='TimeSpec')
 
     # Save raw data file name as an attribute of the data array
     data_array.attrs['raw data filename'] = filename
@@ -76,29 +78,29 @@ def run_noise_removal_process(filepath):
     plt.xlabel("Time (ps)")
     plt.ylabel("Reflectance (arb. units)")
     plt.title(f"{set_number} noise removal")
-    plt.savefig(fname = f"{plot_save_path}")
+    plt.savefig(fname = str(plot_save_path))
     plt.show()
 
     # Save data array in format usable by xarray module for next 
     # processing stage
-    save_path = join(save_dir, f'{set_number}.nc')
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir, exist_ok=True)
+    save_path = save_dir / f'{set_number}.nc'
+    if not save_dir.exists():
+        save_dir.mkdir()
     
     dataset = xr.Dataset({'raw' : data_array_original, 'noise removed': data_array})
 
     dataset.attrs = data_array_original.attrs
     
     try:
-        dataset.to_netcdf(path = save_path)
+        dataset.to_netcdf(path = str(save_path))
     except Exception:
         print("Error saving DataArray to NetCDF. Check if path length is too long.")
-        print(f"save_path was: {save_path}")
+        print(f"save_path was: {str(save_path)}")
 
     '''Kind of a hacky way of finding the plot path relative to the
     report path. Perhaps can improve later. File extension needs
     to be included for rendering .md report file properly.'''
-    plot_rel_path = f"..{plot_save_path.split(r"TRR")[-1]}"
+    plot_rel_path = f"..{str(plot_save_path).split(r"TRR")[-1]}"
 
     pp.update_report(report_file, filename, section = "noise corrected", plot_path = f"{plot_rel_path}")
     
@@ -106,10 +108,16 @@ def run_noise_removal_process(filepath):
 
 # Create directory paths from config file and experiment date
 
-raw_data_dir = join(config.DATA_DIR, expt_date)
-processed_data_dir = join(config.PROCESSED_DATA_DIR, expt_date)
-plots_dir = join(config.PLOTS_DIR, expt_date)
+raw_data_dir = config.DATA_DIR / expt_date
+processed_data_dir = config.PROCESSED_DATA_DIR / expt_date
+if not processed_data_dir.exists():
+    processed_data_dir.mkdir()
 reports_dir = config.REPORTS_DIR
+if not reports_dir.exists():
+    reports_dir.mkdir()
+plots_dir = config.PLOTS_DIR / expt_date
+if not plots_dir.exists():
+    plots_dir.mkdir(parents = True)
 
 # list of processing steps for report generation
 steps_list = ['noise corrected', 'processed', 'fourier transform']
@@ -128,7 +136,7 @@ state = {'step_number' : 0,
 if __name__ == "__main__":
 
     # Generate outline for markdown report
-    report_file = pp.generate_skeleton(raw_data_dir, steps = steps_list)
+    report_file = pp.generate_skeleton(state['load_dir'], steps = steps_list)
 
     # --- Step 1: Remove noise --- #
 
@@ -136,12 +144,9 @@ if __name__ == "__main__":
     # state = pp.initialize_next_step(state, steps_list)
     load_dir = state['load_dir']
     save_dir = state['save_dir']
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
 
     # Get list of files in the given experiment folder
-    file_paths_list = [join(load_dir, f) for f in os.listdir(load_dir) 
-                       if isfile(join(load_dir, f)) and not f.__contains__(".")]
+    file_paths_list = [f for f in load_dir.iterdir() if not f.name.__contains__(".")]
 
     for filepath in file_paths_list:
         run_noise_removal_process(filepath)
@@ -153,11 +158,15 @@ if __name__ == "__main__":
     load_dir = state['load_dir']
     save_dir = state['save_dir']
 
+    if not save_dir.exists():
+        save_dir.mkdir()
+
     # Create list of file paths in load directory
-    file_paths_list = [join(load_dir, f) for f in os.listdir(load_dir)]
+    ## Need to update everything to use pathlib instead of os.path. So far just done thru this point and report generator function.
+    file_paths_list = [str(f) for f in load_dir.iterdir() if f.is_file()]
 
     for filepath in file_paths_list:
         pp.normalize_data(filepath, save_dir)
-        subtraction_results = pp.subtract_decay(filepath, plots_dir, save_dir, report_file)
+        subtraction_results = pp.subtract_decay(filepath, str(plots_dir), save_dir, str(report_file))
 
 # %%

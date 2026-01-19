@@ -2,20 +2,20 @@
 Config file for the project. Creates global variables and path names
 for processing scripts to use.
 
+Assumes code folder and TRR folder (where all files related to TRR
+measurements are kept) are both in the root directory of the project.
+
 '''
-import os
-from os.path import dirname, join
+from pathlib import Path
 
-THIS_DIR = dirname(__file__)
+THIS_DIR = Path(__file__).parent
 
-raw_data_dir_relative_path = r"..\TRR\raw_data"
-DATA_DIR = join(THIS_DIR, raw_data_dir_relative_path)
+TRR_DIR = THIS_DIR.parent / "TRR"
 
-processed_data_dir = r"..\TRR\processed"
-PROCESSED_DATA_DIR = join(THIS_DIR, processed_data_dir)
+DATA_DIR = TRR_DIR / "raw_data"
 
-plots_dir_relative_path = r'..\TRR\reports\plots'
-PLOTS_DIR = join(THIS_DIR, plots_dir_relative_path)
+PROCESSED_DATA_DIR = TRR_DIR / "processed"
 
-reports_dir_rel_path = r"..\TRR\reports"
-REPORTS_DIR = join(THIS_DIR, reports_dir_rel_path)
+REPORTS_DIR = TRR_DIR / "reports"
+
+PLOTS_DIR = REPORTS_DIR / "plots"
