@@ -19,9 +19,6 @@ from os.path import join, dirname
 THIS_DIR = dirname(__file__)
 sys.path.append(THIS_DIR)
 
-from . import fitting_functions as ff
-from . import pipersfunctions as pf
-from . import TRR_functions as trr
 import config
 
 data_dir = config.DATA_DIR

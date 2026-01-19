@@ -93,9 +93,7 @@ def run_noise_removal_process(filepath):
     try:
         dataset.to_netcdf(path = save_path)
     except Exception:
-        import traceback
-        print("Error saving DataArray to NetCDF:")
-        traceback.print_exc()
+        print("Error saving DataArray to NetCDF. Check if path length is too long.")
         print(f"save_path was: {save_path}")
 
     '''Kind of a hacky way of finding the plot path relative to the
@@ -106,123 +104,6 @@ def run_noise_removal_process(filepath):
     pp.update_report(report_file, filename, section = "noise corrected", plot_path = f"{plot_rel_path}")
     
     return None
-
-def subtract_decay(filepath : str):
-    """ Takes a filepath (expects .nc filetype).
-    Fits data with an exponential decay after masking to exclude
-    pre-time zero data.
-
-    Saves the processed data to existing dataset and adds the decay
-    constant of the fit as an attribute of the dataset.
-    """
-    dataset = xr.open_dataset(filepath)
-    set_number = basename(filepath).split(".nc")[0]
-    plot_save_path = f"{join(plots_dir, set_number)}-subtracted.png"
-
-    # Load dataset into memory so .values is available, then close file to allow overwrite
-    dataset.load()
-    dataset.close()
-
-    try:
-        data_array = dataset['normalized'].copy()
-    except:
-        print("No variable named 'normalized' in the dataset. Check that your processed" \
-        "data saved correctly during the normalization step. Canceling subtraction step.")
-        return None
-
-    data_array = data_array.sel(time=~data_array.get_index("time").duplicated())
-
-    # Keep a copy of the original values to restore masked regions later
-    original_values = data_array.values.copy()
-
-    # Mask the data 
-    min_time = data_array.time.values[data_array.argmax()]
-    max_time = data_array.time.values.max()
-
-    masked_da = data_array.copy()
-    masked_da = masked_da.where(data_array.time >= min_time)
-    masked_da = masked_da.where(data_array.time <= max_time)
-
-    masked_values = masked_da.values.copy()
-
-    # Identify masked positions/indices
-    mask = np.isnan(masked_values)
-
-    # Get an array of the masked values and times with the NaNs dropped
-    masked_values = masked_values[~mask]
-    masked_times = masked_da.time.values[~mask]
-
-    # Fit exponential decay to masked data, or subtract data avg if fit fails.
-    initial_guess = [masked_values[0], 0.01, np.mean(masked_values)]
-
-    try:
-        params, _ = curve_fit(pp.exp_decay, 
-                            masked_da.time, 
-                            masked_da.values, 
-                            p0=initial_guess, 
-                            nan_policy='omit')
-        
-        fit_da = xr.DataArray(
-            pp.exp_decay(data_array.time.values, *params),
-            dims = data_array.dims,
-            coords = data_array.coords, 
-            name = 'fit')
-        
-        # Subtract fit from the original data, unmasked.
-        processed_masked = xr.DataArray(
-            original_values - fit_da.values,
-            dims = data_array.dims,
-            coords = data_array.coords,
-            name = 'subtracted wonk'
-        )
-
-        # Reapply mask for times before t0.
-        fitted_data_array = processed_masked.where(data_array.time.values >= min_time)
-        subtracted_data = fitted_data_array.values.copy()
-
-        time_constant = params[0]
-
-    except RuntimeError:
-        print("Curve fit was unsuccessful. Subtracting DC component instead.")
-        subtracted_data = masked_values - np.mean(masked_values)
-        time_constant = 0
-
-    # Create data array with subtracted data
-    processed_data = xr.DataArray(
-        subtracted_data,
-        dims = data_array.dims,
-        coords = data_array.coords,
-        attrs = data_array.attrs,
-        name = 'processed'
-    )
-
-    plt.figure(figsize=(10, 5))
-    plt.plot(data_array.time, processed_data)
-    plt.xlabel("Time (ps)")
-    plt.ylabel("Differential reflectance")
-    plt.title(f"{set_number} Decay Subtracted")
-    plt.savefig(fname = f"{plot_save_path}")
-    plt.show()
-
-    plot_rel_path = f"..{plot_save_path.split(r"TRR")[-1]}"
-    pp.update_report(report_file, data_array.attrs['raw data filename'], section = "processed", plot_path = f"{plot_rel_path}")
-    
-    # Add time constant of subtracted decay to attributes
-    processed_data.attrs['time_constant'] = time_constant
-
-    # Add subtracted data to dataset
-    dataset['subtracted'] = processed_data
-    dataset.attrs['time_constant'] = time_constant
-
-    # Generate save path
-    filename = basename(filepath)
-    save_path = join(save_dir, filename)
-
-    # Save dataset
-    dataset.to_netcdf(path = save_path, mode = 'a')
-
-    return processed_data
-
 
 # Create directory paths from config file and experiment date
 
@@ -278,6 +159,6 @@ if __name__ == "__main__":
 
     for filepath in file_paths_list:
         pp.normalize_data(filepath, save_dir)
-        subtraction_results = subtract_decay(filepath)
+        subtraction_results = pp.subtract_decay(filepath, plots_dir, save_dir, report_file)
 
 # %%

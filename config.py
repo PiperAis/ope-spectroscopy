@@ -14,7 +14,7 @@ DATA_DIR = join(THIS_DIR, raw_data_dir_relative_path)
 processed_data_dir = r"..\TRR\processed"
 PROCESSED_DATA_DIR = join(THIS_DIR, processed_data_dir)
 
-plots_dir_relative_path = r'..\TRR\plots'
+plots_dir_relative_path = r'..\TRR\reports\plots'
 PLOTS_DIR = join(THIS_DIR, plots_dir_relative_path)
 
 reports_dir_rel_path = r"..\TRR\reports"
