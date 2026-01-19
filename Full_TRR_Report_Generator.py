@@ -22,7 +22,6 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 import numpy as np
-from scipy.optimize import curve_fit
 import os
 from os.path import dirname, join, basename, isfile
 from os import listdir
