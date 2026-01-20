@@ -102,7 +102,7 @@ def run_noise_removal_process(filepath : Path):
     to be included for rendering .md report file properly.'''
     plot_rel_path = f"..{str(plot_save_path).split(r"TRR")[-1]}"
 
-    pp.update_report(report_file, filename, section = "noise corrected", plot_path = f"{plot_rel_path}")
+    pp.update_report(report_file, filename, section = "noise corrected", plot_path = f"{plot_rel_path}") # type: ignore
     
     return None
 
@@ -119,24 +119,25 @@ plots_dir = config.PLOTS_DIR / expt_date
 if not plots_dir.exists():
     plots_dir.mkdir(parents = True)
 
-# list of processing steps for report generation
-steps_list = ['noise corrected', 'processed', 'fourier transform']
-
 # initialize a state variable to track processing progress
 # and define directory paths accordingly.
 # maybe eventually modify initialize next step func. to
 # do this initial generation too?
 state = {'step_number' : 0, 
+        'step_name' : 'pre-init',
+        'steps_list' : ['noise corrected', 'processed', 'fourier transform'],
+        'raw_data_dir' : raw_data_dir,
         'load_dir' : raw_data_dir, 
         'save_dir': processed_data_dir,
         'plots_dir' : plots_dir,
+        'reports_dir' : reports_dir
         }
 
 ""
 if __name__ == "__main__":
 
     # Generate outline for markdown report
-    report_file = pp.generate_skeleton(state['load_dir'], steps = steps_list)
+    report_file = pp.generate_skeleton(state)
 
     # --- Step 1: Remove noise --- #
 
@@ -153,7 +154,7 @@ if __name__ == "__main__":
         
     # Step 2: Processing (normalize and subtract decay)
     
-    state = pp.initialize_next_step(state, steps_list)
+    state = pp.initialize_next_step(state)
 
     load_dir = state['load_dir']
     save_dir = state['save_dir']
