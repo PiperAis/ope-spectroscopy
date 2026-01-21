@@ -1,6 +1,10 @@
 """
 Functions for plotting and processing data
 
+v 1.3
+Updated January 21, 2025. 
+Removed redundant function for plotting xarray.DataArray objects.
+Brought into line with PEP 8 standards.
 v 1.2
 Updated September 9, 2025
 
@@ -11,14 +15,13 @@ import numpy as np
 import glob
 import os
 import re
-import xarray as xr
-
-from . import fitting_functions as ff
 
 def norm(x):
     return (x - np.min(x))/(np.max(x)-np.min(x))
 
-def read_spectrum(filename : str, normalize : bool = False, xEnergy : bool = True, delimiter=',', umBlaze : bool = False):
+def read_spectrum(
+        filename : str, normalize : bool = False, xEnergy : bool = True, 
+        delimiter=',', umBlaze : bool = False):
     """ 
     Reads data from a txt file or CSV, including data collected using 
     LightField. umBlaze = 1 sets a 22 nm shift, to compensate for a 
@@ -54,7 +57,8 @@ def mask(xdata, ydata, xmin, xmax):
     """
     Returns 2 lists: masked x-var data and masked y-var data.
     """
-    indicesWithinRange = [index for index, x in enumerate(xdata) if xmin <= x <= xmax]
+    indicesWithinRange = [index for index, x in enumerate(xdata) 
+                          if xmin <= x <= xmax]
     xdataMasked = xdata[indicesWithinRange]
     ydataMasked = ydata[indicesWithinRange]
     return xdataMasked, ydataMasked
@@ -69,7 +73,9 @@ def extract_field_from_filename(filename : str):
         match = re.search(r"(.*?)T", part)
         if match:
             return match.group(1)
-    raise ValueError(f"No magnetic field found in filename {filename}. Please ensure the filename contains a magnetic field value followed by 'T' (e.g., '0.5T').")
+    raise ValueError(f"No magnetic field found in filename {filename}. " \
+                     "Please ensure the filename contains a magnetic field value" \
+                     " followed by 'T' (e.g., '0p5T').")
 
 
 def get_b_fields(filepathList: list):
@@ -82,7 +88,7 @@ def get_b_fields(filepathList: list):
         filename = os.path.basename(filepath)
         bfield_str = extract_field_from_filename(filename)
         if bfield_str is None:
-            print(f"Warning: No magnetic field found in filename {filename}. Skipping...")
+            print(f"No magnetic field found in filename {filename}. Skipping.")
             continue
         if "p" in bfield_str:
             bfield_str = bfield_str.replace("p", ".")
@@ -174,12 +180,13 @@ def select_file():
 def get_heatmap_data(energy, intensity, 
                      plot_with_mask : bool = False, 
                      apply_smooth : bool = False, 
-                     min_energy=None, 
-                     max_energy=None):
+                     min_energy = None, 
+                     max_energy = None):
     from scipy.signal import savgol_filter as smooth
     if plot_with_mask:
         if min_energy is None or max_energy is None:
-            raise ValueError("min_energy and max_energy must be specified when plot_with_mask is 1.")
+            raise ValueError("min_energy and max_energy must be specified when " \
+                "plot_with_mask is 1.")
         yvar, intensity = mask(energy, intensity, min_energy, max_energy)
     else:
         yvar = energy
@@ -188,14 +195,23 @@ def get_heatmap_data(energy, intensity,
         zvar = smooth(zvar, 5, 3)
     return yvar, zvar
 
-def plot_heatmap(xvariable, yvariable, zvariable, plotTitle, cmap='inferno', colorbar=False) -> None:
+def plot_heatmap(
+        xvariable : list, 
+        yvariable : list, 
+        zvariable : list, 
+        plot_title : str, 
+        cmap : str = 'inferno', 
+        colorbar : bool = False) -> None:
     """
     Function to plot a heatmap of z data as a function of x and y.  
-    xvariable will go on the horizontal axis and should be a single list of values. 
-    yvariable will go on the vertical axis and should be a list of identical lists containing the y values.
+    xvariable will go on the horizontal axis and should be a single 
+    list of values. 
+    yvariable will go on the vertical axis and should be a list of 
+    identical lists containing the y values.
     The length of yvariable should be equal to the length of xvariable. 
     to the number of xvariable values. 
-    zvariable should be a list of lists where each inner list corresponds to the intensity values for an xvariable value. 
+    zvariable should be a list of lists where each inner list corresponds 
+    to the intensity values for an xvariable value. 
     The length of zvariable should be the same length as yvariable."""
     # Convert lists to arrays
     xvariable_array = np.array(xvariable)
@@ -208,28 +224,12 @@ def plot_heatmap(xvariable, yvariable, zvariable, plotTitle, cmap='inferno', col
     # Plot contour plot for each magnetic field
     plt.figure(dpi = 400, figsize=(4, 4))
     contour = plt.contourf(x_grid, y_grid, zvariable_array.T, cmap=cmap)
-    if colorbar == True:
+    if colorbar:
         plt.colorbar(contour, label='Intensity')
 
     plt.xlabel(r'$\mu_0H$ (T)', size = 16)
     plt.ylabel('Energy (eV)', size = 16)
-    # plt.title(plotTitle, size = 16)
-    plt.show()
-
-def plot_data_array(data: xr.DataArray, title: str = '', save=False, save_path: str = '') -> None:
-    """ Plots an xarray DataArray with time on x-axis and values on y-axis. 
-    Written for transient absorption data.
-    Assumes time is in ps and values are in arbitrary units. """
-    x_vals = data.coords['time'].values
-    y_vals = data.values
-    plt.plot(x_vals, y_vals)
-    plt.xlabel("Time (ps)")
-    plt.ylabel("$R/R_0$")
-    plt.title(title)
-    if save:
-        if save_path is None:
-            raise ValueError("save_path must be specified when save is True.")
-        plt.savefig(save_path)
-    # plt.xscale('log')
+    if plot_title:
+        plt.title(plot_title, size = 16)
     plt.show()
 
