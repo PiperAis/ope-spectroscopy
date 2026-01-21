@@ -27,6 +27,8 @@ author: @piper
 """
 from os.path import basename
 import pandas as pd
+import pathlib
+from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import re
@@ -125,7 +127,7 @@ def get_rzero(filename : str) -> float:
 # --- Functions to facilitate use of xarray package --- #
 
 def prepare_data_array(
-        filepath : str, 
+        filepath : pathlib.PurePath, 
         inputtype : str = 'TimeSpec'
         ) -> xr.DataArray:
     """
@@ -148,12 +150,13 @@ def prepare_data_array(
         time_index = 'time'
         time_factor = 1
 
+    filepath_string = str(filepath)
     # Read data file with pandas read_csv function
-    raw_data = pd.read_csv(filepath, 
+    raw_data = pd.read_csv(filepath_string, 
                            usecols = usecols, 
                            sep = separator, 
                            header = header)
-    filename = basename(filepath)
+    filename = filepath.name
     if inputtype == 'CSV':
         data_index = raw_data.columns.tolist()[1]
     
@@ -174,7 +177,8 @@ def prepare_data_array(
                                   'sample' : sample, 
                                   'scale_factor' : scale_factor,
                                   'scale_factor_value' : scale_factor,
-                                  'rzero' : rzero})
+                                  'rzero' : rzero,
+                                  'raw data filename' : filename})
     
     return array
 
@@ -280,9 +284,9 @@ def subtract_biexponential_decay(
 
 def normalize_data(filepath = '', 
                    save_dir = ''):
-    """Adapted from TRR_processing script.
+    """
     Input is a path to the data file being processed, must be an xarray that
-    went through the noise removal step and was saved as a .nc
+    was saved as a .nc
     Normalizes data by scale factor and R0 and adds that to the dataset. Saves. 
     Returns nothing
     """

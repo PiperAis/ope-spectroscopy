@@ -2,17 +2,15 @@
 Docstring for Untitled-1
 """
 
+import matplotlib.pyplot as plt
 import pathlib
 from pathlib import Path
+import re
 import sys
+import xarray as xr
 
 THIS_DIR = Path(__file__).parent
 sys.path.append(str(THIS_DIR))
-
-import processing_package as pp
-from processing_package import config
-
-# Import custom modules
 
 import processing_package as pp
 import config
@@ -79,21 +77,23 @@ class ProcessingState:
         
         return None
 
-    def next_step(self):
+    def initialize_next_step(self):
         self.step_number += 1
         self.current_step = self.steps_list[self.step_number]
 
         previous_save_dir = self.save_dir
         self.load_dir = previous_save_dir
 
-        return f'Current step: {self.current_step}'
+        self.check_directory_existence()
 
-    def get_file_names(self, dir : pathlib.PurePath, condition : str) -> list[str]:
+        return f'Initialized step: {self.current_step}'
+
+    def get_file_names(self, dir : pathlib.PurePath, condition : str = '') -> list[str]:
         """
         :param dir: Directory containing files to be listed
         :type dir: pathlib.PurePath
-        :param condition: Conditional for filtering file types. 
-        Start with 'if' then write out conditional statement.
+        :param condition: Conditional for filtering file types.
+        [f for f in dir.iterdir() if condition]
         :type condition: str
 
         Returns a list of the file names in dir in alphabetical order.
@@ -109,6 +109,14 @@ class ProcessingState:
         return filenames
     
     def generate_report_skeleton(self, diagnostic_mode : bool = False) -> pathlib.PurePath:
+        """
+        Docstring for generate_report_skeleton
+        
+        :param diagnostic_mode: Set to True to print information about report generation.
+        :type diagnostic_mode: bool
+        :return: Path to the .md file of the report.
+        :rtype: PurePath
+        """
         report_file_name = f'{self.raw_data_dir.name}-report.md'
         self.report_file = self.reports_dir / report_file_name
         report_file = self.report_file
@@ -135,9 +143,133 @@ class ProcessingState:
 
         return report_file
     
-    def update_report(self, caption : str):
+    def update_report(self, filename : str, 
+                      caption : str = '', 
+                      include_plot : bool = True):
+        """
+        Docstring for update_report
+    
+        :param filename: identifies the dataset to place plots and text under 
+        correct heading in the report skeleton.
+        :type filename: str
+        :param caption: Text to include in report section.
+        :type caption: str
+        :param include_plot: Set to False if not including a plot in this section.
+        :type include_plot: bool
+        """
+        content = self.report_file.read_text()
+        
+        section = self.current_step
+        pattern = rf"(# {re.escape(filename)}[\s\S]*?## {re.escape(section)}\n)(\(placeholder\))"
 
-        return NotImplemented
+        if include_plot:
+            plot_path = str(self.plot_rel_path)
+            replacement = rf"\1![]({plot_path})"
+        else:
+            replacement = ''
+        
+        if caption:
+            replacement += f'\n\n*{caption}'
+        
+        new_content, count = re.subn(pattern, replacement, content, count=1)
 
+        if count == 0:
+            raise ValueError(f"Placeholder not found for {filename} / {section}")
 
+        with self.report_file.open(mode = 'a') as f:
+            f.write(new_content)
+
+        return None
+    
+    def run_noise_removal_process(self):
+        filepaths_list = [f for f in self.load_dir.iterdir() if not str(f).__contains__(".")]
+
+        for filepath in filepaths_list:
+            filename = filepath.name
+            set_number = filename.split('-')[0]
+            plot_save_path = self.plots_dir / f'{set_number}-{self.current_step}.png'
+
+            data_array = pp.prepare_data_array(filepath)
+
+            data_array_original = data_array.copy()
+
+            # Create interactive plot
+            fig, ax = plt.subplots(figsize=(10, 5))
+            remover = pp.NoiseRemover(data_array, data_array_original, ax, fig)
+            fig.canvas.mpl_connect("button_press_event", remover.onclick)
+            remover.update_plot()
+            pp.add_noise_removal_buttons(fig, ax, remover)
+            
+            plt.show()
+
+            final_selected_points = remover.selected_points
+
+            # Plot results of noise removal
+            plt.figure(figsize=(10, 5))
+            plt.plot(data_array_original.time, data_array_original, 
+                        label="Original Data", linestyle="dotted", alpha=0.5)
+            plt.plot(data_array.time, data_array, 
+                        label="Cleaned Data", linewidth=1)
+            plt.legend()
+            plt.xlabel("Time (ps)")
+            plt.ylabel("Reflectance (arb. units)")
+            plt.title(f"{set_number} noise removal")
+            plt.savefig(fname = str(plot_save_path))
+            plt.show()
+            
+            # Save data array in format usable by xarray module for next 
+            # processing stage
+            save_path = self.save_dir / f'{set_number}.nc'   
+
+            # Create dataset to save raw and processed data in one object
+            dataset = xr.Dataset({'raw' : data_array_original, self.current_step: data_array})
+            dataset.attrs = data_array_original.attrs
+    
+            try:
+                dataset.to_netcdf(path = str(save_path))
+            except Exception:
+                print("Error saving DataArray to NetCDF. Check if path length is too long.")
+                print(f"save_path was: {str(save_path)}")   
+
+            # Get relative path from report to plot
+            '''Kind of a hacky way of finding the plot path relative to the
+            report path. Perhaps can improve later.'''
+            self.plot_rel_path = f"..{str(plot_save_path).split(r"TRR")[-1]}"
+
+            self.update_report(filename)
+        return
+
+    def normalize_data(self):
+        filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
+        save_dir = self.save_dir
+
+        for filepath in filepaths_list:
+            filename = filepath.name
+            dataset = xr.open_dataset(filepath)
+
+            # Load dataset into memory and close file handle so we can overwrite safely
+            dataset.load()
+            dataset.close()
+
+            # Get previous step name and load data
+            prev_step = self.steps_list[self.step_number - 1]
+            data_array = dataset[prev_step].copy()
+
+            if 'scale_factor' not in data_array.attrs and 'scale_factor_value' not in data_array.attrs:
+                print("Scale factor not included in file name, setting to 1.")
+                data_array.attrs['scale_factor_value'] = 1
+            
+            if 'rzero' not in data_array.attrs and 'r_zero' not in data_array.attrs:
+                print("R_0 not included in file name, setting to 1.")
+                data_array.attrs['rzero'] = 1
+            
+            data_array = pp.subtract_background(data_array, threshold = -2)
+            data_array = pp.divide_out_factors(data_array)
+
+            # Add the processed data to the dataset
+            dataset[self.current_step] = data_array
+
+            # Save using mode = a to append new data to the dataset file.
+            dataset.to_netcdf(path = save_dir / filename, mode = 'a')
+        return None
     
