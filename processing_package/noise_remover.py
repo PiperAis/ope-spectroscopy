@@ -2,35 +2,19 @@
 Defines a class to help with noise removal in TRR data, particularly
 removing single- or two-point drops in the data due to chopper issues.
 
-Updated 2025-09-09
+Updated 2026-01-21
+Removed unnecessary imports and variables.
 author: @piper
 """
-
-# import modules and functions
-import sys
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.widgets import Button
 import xarray as xr
 
-from matplotlib.widgets import Button
-from os.path import dirname, join, basename, isfile
-from scipy.signal import savgol_filter as smooth
-
-# import custom module config and set directory paths
-THIS_DIR = dirname(__file__)
-sys.path.append(THIS_DIR)
-
-from . import config
-
-data_dir = config.DATA_DIR
-processed_data_dir = config.PROCESSED_DATA_DIR
-plots_dir = config.PLOTS_DIR
-reports_dir = config.REPORTS_DIR
-
-# --- Class used for noise cleanup --- #
-
 class NoiseRemover:
-    def __init__(self, data_array : xr.DataArray, data_array_original : xr.DataArray, ax, fig):
+    def __init__(
+            self, data_array : xr.DataArray, 
+            data_array_original : xr.DataArray, ax, fig):
         self.data_array = data_array
         self.data_array_original = data_array_original
         self.selected_points = []
@@ -40,9 +24,15 @@ class NoiseRemover:
 
     def update_plot(self):
         self.ax.clear()
-        self.ax.scatter(self.data_array.time, self.data_array_original, label="Original Data", s=6, alpha=0.5)
-        self.ax.scatter(self.data_array.time, self.data_array, label="Data with Removed Noise", s=6, alpha=0.5)
-        self.ax.plot(self.data_array.time, self.data_array, label="Data with Removed Noise", alpha=0.5)
+        self.ax.scatter(
+            self.data_array.time, self.data_array_original, 
+            label="Original Data", s=6, alpha=0.5)
+        self.ax.scatter(
+            self.data_array.time, self.data_array, 
+            label="Data with Removed Noise", s=6, alpha=0.5)
+        self.ax.plot(
+            self.data_array.time, self.data_array, 
+            label="Data with Removed Noise", alpha=0.5)
         self.ax.set_title("Click to select dip edges (right-click to undo)")
         self.ax.set_xlabel("Time")
         self.ax.set_ylabel("Value")
@@ -53,11 +43,12 @@ class NoiseRemover:
         if event.xdata is not None:
             idx = np.argmin(np.abs(self.data_array.time.values - event.xdata))
             selected_time = self.data_array.time[idx].values
-
-            if event.button == 1:  # Left-click to add
+            # Left-click to add
+            if event.button == 1:  
                 self.selected_points.append(idx)
                 self.selected_times.append(selected_time)
-                print(f"Selected index: {idx}, Time: {selected_time}, Value: {self.data_array[idx].values}")
+                print(f"Selected index: {idx}, Time: {selected_time}, " \
+                      "Value: {self.data_array[idx].values}")
 
                 if len(self.selected_points) % 2 == 0:
                     start, end = self.selected_points[-2], self.selected_points[-1]
@@ -65,8 +56,8 @@ class NoiseRemover:
                         start, end = end, start
                     self.data_array[start:end+1] = np.nan
                     print(f"Marked indices {start} to {end} for removal")
-
-            elif event.button == 3 and len(self.selected_points) >= 2:  # Right-click to undo last pair
+            # Right-click to undo last pair
+            elif event.button == 3 and len(self.selected_points) >= 2:  
                 removed_start = self.selected_points.pop()
                 removed_end = self.selected_points.pop()
                 if removed_start > removed_end:

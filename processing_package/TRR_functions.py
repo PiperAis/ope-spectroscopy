@@ -5,14 +5,21 @@ Helper functions for processing TRR (time resolved reflectance) data
 collected using TimeSpec software. Expects file naming conventions 
 that use hyphens to separate pieces of information: \n
 
-[Dataset number]-flake[sample name]-[bfield]T-[scale factor]SF-[R0]mV-[other] \n
+[Dataset number]-flake[sample name]-[bfield]T-[scale factor]SF-[R0]mV \n
+Separate any further metadata with hyphens and include units or
+identifier after the value.
 
 Use n to designate negative fields and p instead of . in the file name. \n
 \n\n
 Example:\n
 01-flake1a-n0p2T-180kSF-118mV-532pump20uW
+
 \n\n
-V 1.2
+V 1.3
+\n\n
+2026-01-21 \n
+Moved many functions into the ProcessingState class, and updated to
+PEP8 conventions.
 
 Changelog:
 \n\n
@@ -44,16 +51,15 @@ from . import exp_decay
 
 # --- Functions for extracting metadata from file names --- #
 
-def get_field(filename : str) -> float | None:
+def get_field(filename : str | pathlib.PurePath) -> float | None:
     """ 
-    Gets magnetic field from data filename, returning it as a str
-    or None if not found. Assumes filename structure is (e.g.)
+    Gets magnetic field from data filename, returning it as a str or 
+    None if not found. Assumes filename structure is (e.g.)
     ***-n2p6T-*** where n represents negative sign, p represents a
-    period, and the field is separated from other information by -
+    period, and the field is separated from other information by '-'
     """
-
     # Search for the regex pattern denoting bfield
-    match = re.search(r'-n?\d+(p\d+)?T', filename)
+    match = re.search(r'-n?\d+(p\d+)?T', str(filename))
 
     # Convert filename formatting to float
     if match:
@@ -67,12 +73,12 @@ def get_field(filename : str) -> float | None:
     else:
         return None
 
-def get_sample_name(filename : str) -> str:
+def get_sample_name(filename : str | pathlib.PurePath) -> str:
     """ Gets sample name from data filename, returning 'unnamed
-    sample' if not found. """
-
+    sample' if not found. 
+    """
     # Search for the regex pattern denoting flake name
-    match = re.search(r'flake.*-', filename)
+    match = re.search(r'flake.*-', str(filename))
 
     # Format sample name
     if match:
@@ -84,14 +90,13 @@ def get_sample_name(filename : str) -> str:
     else:
         return 'unnamed sample'
 
-def get_scale_factor(filename : str) -> int:
+def get_scale_factor(filename : str | pathlib.PurePath) -> int:
     """ 
-    Gets scale factor from data filename and returns it as an int. Returns
-    1 if pattern is not found. 
+    Gets scale factor from data filename and returns it as an int. 
+    Returns 1 if pattern is not found. 
     """
-
     # Search for regex pattern denoting scale factor
-    match = re.search(r'-\d+kSF', filename)
+    match = re.search(r'-\d+kSF', str(filename))
 
     # Format scale factor
     if match:
@@ -104,14 +109,13 @@ def get_scale_factor(filename : str) -> int:
     else:
         return 1
 
-def get_rzero(filename : str) -> float:
+def get_rzero(filename : str | pathlib.PurePath) -> float:
     """ 
-    Gets r_0 from data filename and returns it as a float. Returns
-    1 if pattern is not found. 
+    Gets r_0 from data filename and returns it as a float. Returns 1 if 
+    pattern is not found. 
     """
-
     # Search for regex pattern denoting r_0
-    match = re.search(r'-\d+p?(\d+)?mV', filename)
+    match = re.search(r'-\d+p?(\d+)?mV', str(filename))
 
     # Format value for return
     if match:
@@ -149,8 +153,8 @@ def prepare_data_array(
         header = 'infer'
         time_index = 'time'
         time_factor = 1
-
     filepath_string = str(filepath)
+
     # Read data file with pandas read_csv function
     raw_data = pd.read_csv(filepath_string, 
                            usecols = usecols, 
@@ -161,14 +165,14 @@ def prepare_data_array(
         data_index = raw_data.columns.tolist()[1]
     
     # Get metadata from filename
-    field = get_field(filename) if get_field(filename) else 0
+    field = get_field(filename) if get_field(filename) is not None else 0
     sample = get_sample_name(filename)
     scale_factor = get_scale_factor(filename)
     rzero = get_rzero(filename)
 
     # Create data array and record metadata. Use a non-reserved attribute
     # name `scale_factor_value` so it persists through NetCDF I/O; keep
-    # `scale_factor` for runtime convenience but also include the safe
+    # `scale_factor` for backwards compabibility but also include the safe
     # key.
     array = xr.DataArray(data = raw_data[data_index], 
                          coords = {'time' : raw_data[time_index]*time_factor},
@@ -178,19 +182,20 @@ def prepare_data_array(
                                   'scale_factor' : scale_factor,
                                   'scale_factor_value' : scale_factor,
                                   'rzero' : rzero,
-                                  'raw data filename' : filename})
+                                  'raw data filename' : filename
+                                  })
     
     return array
 
 def mask_data_array(
         data_array : xr.DataArray, 
         min_time : int | float, 
-        max_time : int | float) -> xr.DataArray:
-    """ Returns a DataArray with datapoints outside of the given time
-    limits replaced with NaN. """
-    # new_array = data_array.sel(
-    #     time = slice(min_time, max_time),
-    #     drop = True)
+        max_time : int | float
+        ) -> xr.DataArray:
+    """ 
+    Returns a DataArray with datapoints outside of the given time
+    limits replaced with NaN. 
+    """
     condition = (data_array >= min_time) and (data_array <= max_time)
     new_array = data_array.where(condition).all()
     
@@ -208,52 +213,27 @@ def subtract_background(
     calculated.
     """
     background_data = data.where(data.time < threshold, drop = True)
-    average = background_data.mean().item() if background_data.count() > 0 else None
+    average = (background_data.mean().item() if background_data.count() > 0 
+               else None)
     if average is not None:
         data.values -= average
     return data
 
 def divide_out_factors(data_array : xr.DataArray) -> xr.DataArray:
     """
-    Normalize transient reflectance data by dividing out R0 and scale factor.
-    Expects input array to have attributes as assigned by the prepare_data_array
-    function.
+    Normalize transient reflectance data by dividing out R0 and scale 
+    factor. Expects input array to have attributes as assigned by the 
+    prepare_data_array function.
     """
     # Support either 'rzero' or 'r_zero' keys and fall back to 1 if missing
     r_zero = data_array.attrs.get('rzero', data_array.attrs.get('r_zero', 1))
     # Prefer the non-reserved key `scale_factor_value`, fall back to
     # legacy `scale_factor` for compatibility.
-    scale_factor = data_array.attrs.get('scale_factor_value',
-                                       data_array.attrs.get('scale_factor', 1))
+    scale_factor = data_array.attrs.get(
+        'scale_factor_value', data_array.attrs.get('scale_factor', 1))
 
     data_array.values = data_array.values / (r_zero * scale_factor)
     return data_array
-
-def subtract_exponential_decay(x_data, y_data, time_constant : float = 0.01):
-    """
-    Fits an exponential decay to the data and subtracts it, then 
-    plots the original data with the fit and returns a list:
-    [corrected data, time constant].
-    """
-
-    initial_guess = (y_data[0], time_constant, np.mean(y_data))
-    params, _ = curve_fit(ff.exp_decay, x_data, y_data, p0=initial_guess, nan_policy='omit')
-    time_constant = params[0]
-    # Generate the fitted curve for all time points
-    fitted_curve = ff.exp_decay(x_data, *params)
-    
-    # Subtract fitted curve from original data
-    y_corrected = y_data - fitted_curve
-
-    plt.plot(x_data, y_data)
-    plt.plot(x_data, fitted_curve)
-    plt.xlabel("Time (ps)")
-    plt.ylabel("Reflectance (arb. units)")
-    plt.title("Data with expontential fit.")
-    plt.show()
-
-    # Return new data array
-    return [y_corrected, time_constant]
 
 def subtract_biexponential_decay(
         x_data, 
@@ -265,7 +245,8 @@ def subtract_biexponential_decay(
     plots the original data with the fit and returns the corrected data.
     """
 
-    initial_guess = (y_data[0], time_constant1, y_data[0]/2, time_constant2, np.mean(y_data))
+    initial_guess = (y_data[0], time_constant1, y_data[0]/2, time_constant2, 
+                     np.mean(y_data))
     params, _ = curve_fit(ff.bi_exp_decay, x_data, y_data, p0=initial_guess)
 
     # Generate the fitted curve for all time points
@@ -281,178 +262,3 @@ def subtract_biexponential_decay(
 
     # Return new data array
     return y_corrected
-
-def normalize_data(filepath = '', 
-                   save_dir = ''):
-    """
-    Input is a path to the data file being processed, must be an xarray that
-    was saved as a .nc
-    Normalizes data by scale factor and R0 and adds that to the dataset. Saves. 
-    Returns nothing
-    """
-
-    filename = basename(filepath)
-
-    dataset = xr.open_dataset(filepath)
-
-    # Load dataset into memory and close file handle so we can overwrite safely
-    dataset.load()
-    dataset.close()
-    data_array = dataset['noise removed'].copy()
-
-    # Ensure scale factor and rzero attrs exist (don't assume keys are present).
-    # Use `scale_factor_value` (non-reserved) for persistence in NetCDF.
-    if ('scale_factor' not in data_array.attrs) and ('scale_factor_value' not in data_array.attrs):
-        print("Scale factor not included in file name, setting to 1.")
-        data_array.attrs['scale_factor_value'] = 1
-
-    if 'rzero' not in data_array.attrs and 'r_zero' not in data_array.attrs:
-        print("R_0 not included in file name, setting to 1.")
-        data_array.attrs['rzero'] = 1
-
-    # Background subtract and normalize
-    data_array = subtract_background(data_array, threshold = -2)
-    data_array = divide_out_factors(data_array)
-
-    # Add the normalized data to the dataset
-    dataset['normalized'] = data_array
-    # print('Before saving, the data_array looks like:')
-    # print(dataset['normalized'].head())
-
-    # Save using mode = 'a' to allow appending new information to same file.
-    if save_dir:
-        dataset.to_netcdf(path = join(save_dir, filename), mode = 'a')
-    else:
-        print('Please include a save directory in the normalize_data function arguments.')
-
-    return None
-
-
-def subtract_decay(filepath : str, 
-                   plots_dir : str, 
-                   save_dir : str, 
-                   report_file : str):
-    """ 
-    Inputs: 
-    filepath (expects .nc filetype). \n
-    plots_dir: path to the directory where plots are stored \n
-    save_dir: path to the directory where data should be saved \n
-    report_file: path to md report generated by generate_skeleton
-    script.
-    \n \n
-
-    Fits data with an exponential decay after masking to exclude
-    pre-time zero data.
-    \n\n
-    Saves the processed data to existing dataset and adds the decay
-    constant of the fit as an attribute of the dataset. 
-    Currently returns the processed data array (xarray DataArray) but
-    not sure if that's useful.
-    """
-    dataset = xr.open_dataset(filepath)
-    set_number = basename(filepath).split(".nc")[0]
-    plot_save_path = f"{join(plots_dir, set_number)}-subtracted.png"
-
-    # Load dataset into memory so .values is available, then close file to allow overwrite
-    dataset.load()
-    dataset.close()
-
-    try:
-        data_array = dataset['normalized'].copy()
-    except:
-        print("No variable named 'normalized' in the dataset. Check that your processed" \
-        "data saved correctly during the normalization step. Canceling subtraction step.")
-        return None
-
-    data_array = data_array.sel(time=~data_array.get_index("time").duplicated())
-
-    # Keep a copy of the original values to restore masked regions later
-    original_values = data_array.values.copy()
-
-    # Mask the data 
-    min_time = data_array.time.values[data_array.argmax()]
-    max_time = data_array.time.values.max()
-
-    masked_da = data_array.copy()
-    masked_da = masked_da.where(data_array.time >= min_time)
-    masked_da = masked_da.where(data_array.time <= max_time)
-
-    masked_values = masked_da.values.copy()
-
-    # Identify masked positions/indices
-    mask = np.isnan(masked_values)
-
-    # Get an array of the masked values and times with the NaNs dropped
-    masked_values = masked_values[~mask]
-    masked_times = masked_da.time.values[~mask]
-
-    # Fit exponential decay to masked data, or subtract data avg if fit fails.
-    initial_guess = [masked_values[0], 0.01, np.mean(masked_values)]
-
-    try:
-        params, _ = curve_fit(exp_decay, 
-                            masked_da.time, 
-                            masked_da.values, 
-                            p0=initial_guess, 
-                            nan_policy='omit')
-        
-        fit_da = xr.DataArray(
-            exp_decay(data_array.time.values, *params),
-            dims = data_array.dims,
-            coords = data_array.coords, 
-            name = 'fit')
-        
-        # Subtract fit from the original data, unmasked.
-        processed_masked = xr.DataArray(
-            original_values - fit_da.values,
-            dims = data_array.dims,
-            coords = data_array.coords,
-            name = 'subtracted wonk'
-        )
-
-        # Reapply mask for times before t0.
-        fitted_data_array = processed_masked.where(data_array.time.values >= min_time)
-        subtracted_data = fitted_data_array.values.copy()
-
-        time_constant = params[0]
-
-    except RuntimeError:
-        print("Curve fit was unsuccessful. Subtracting DC component instead.")
-        subtracted_data = masked_values - np.mean(masked_values)
-        time_constant = 0
-
-    # Create data array with subtracted data
-    processed_data = xr.DataArray(
-        subtracted_data,
-        dims = data_array.dims,
-        coords = data_array.coords,
-        attrs = data_array.attrs,
-        name = 'processed'
-    )
-
-    plt.figure(figsize=(10, 5))
-    plt.plot(data_array.time, processed_data)
-    plt.xlabel("Time (ps)")
-    plt.ylabel("Differential reflectance")
-    plt.title(f"{set_number} Decay Subtracted")
-    plt.savefig(fname = f"{plot_save_path}")
-    plt.show()
-
-    plot_rel_path = f"..{plot_save_path.split(r"TRR")[-1]}"
-    update_report(report_file, data_array.attrs['raw data filename'], section = "processed", plot_path = f"{plot_rel_path}")
-    
-    # Add time constant of subtracted decay to attributes
-    processed_data.attrs['time_constant'] = time_constant
-
-    # Add subtracted data to dataset
-    dataset['subtracted'] = processed_data
-    dataset.attrs['time_constant'] = time_constant
-
-    # Generate save path
-    filename = basename(filepath)
-    save_path = join(save_dir, filename)
-
-    # Save dataset
-    dataset.to_netcdf(path = save_path, mode = 'a')
-
-    return processed_data
