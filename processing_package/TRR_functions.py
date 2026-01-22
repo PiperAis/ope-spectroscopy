@@ -32,22 +32,18 @@ To handle r0  information included in file name
 
 author: @piper
 """
-from os.path import basename
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import pathlib
 from pathlib import Path
-import matplotlib.pyplot as plt
-import numpy as np
 import re
+from scipy.optimize import curve_fit
 import xarray as xr
+
 xr.set_options(keep_attrs=True)
 
-from scipy.optimize import curve_fit
-from os.path import join
-
 from . import fitting_functions as ff
-from . import update_report
-from . import exp_decay
 
 # --- Functions for extracting metadata from file names --- #
 
