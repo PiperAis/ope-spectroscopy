@@ -16,6 +16,8 @@ sys.path.append(str(THIS_DIR))
 import processing_package as pp
 import config
 from . import exp_decay
+from . import trr_dataset
+from trr_dataset import TRRDataset
 
 class ProcessingState:
     def __init__(self, 
@@ -45,6 +47,7 @@ class ProcessingState:
         # Initialize properties
         self.__step_number = 0
         self.__current_step = self.__steps_list[0]
+        self.__previous_step = None
         self.raw_data_dir = config.DATA_DIR / experiment_name
         self.save_dir = config.PROCESSED_DATA_DIR / experiment_name
         self.load_dir = self.raw_data_dir
@@ -52,6 +55,7 @@ class ProcessingState:
         self.plots_dir = config.PLOTS_DIR / experiment_name
 
         self.check_directory_existence()
+        self.prepare_files
     
     @property
     def steps_list(self):
@@ -59,10 +63,30 @@ class ProcessingState:
 
     @steps_list.setter
     def steps_list(self, proposed_list):
-        if len(proposed_list):
+        if len(proposed_list) and all([type(proposed_list[i]) == str for i in range(len(proposed_list))]):
             self.__steps_list = proposed_list
-        else:
+        elif not len(proposed_list):
             raise AttributeError("Steps list must have at least one element.")
+        else:
+            raise ValueError("All steps must be strings.")
+    
+    @property
+    def current_step(self):
+        return self.steps_list[self.__step_number]
+    
+    @current_step.setter
+    def current_step(self, step_name : str):
+        step = step_name.replace('_', ' ').lower()
+        if step in self.__steps_list:
+            self.__current_step = step
+            current_step_number = self.__steps_list.index(step)
+            self.__step_number = current_step_number
+            try:
+                self.__previous_step = self.steps_list[current_step_number - 1]
+            except IndexError:
+                self.__previous_step = None
+        else:
+            raise ValueError("Step name not found in steps list.")
 
     def check_directory_existence(self):
         """
@@ -94,7 +118,14 @@ class ProcessingState:
         return None
 
     def initialize_next_step(self):
+        '''
+        Updates variables that track the current and previous
+        processing steps and sets the new load directory as the save
+        directory from the previous step. \n
+        Returns a string that states which step was just initialized.
+        '''
         self.__step_number += 1
+        self.__previous_step = self.__current_step
         self.__current_step = self.steps_list[self.__step_number]
 
         previous_save_dir = self.save_dir
@@ -109,13 +140,13 @@ class ProcessingState:
                        condition : str = ''
                        ) -> list[str]:
         """
+        Returns a list of the file names in dir in alphabetical order.
+
         :param dir: Directory containing files to be listed
         :type dir: pathlib.PurePath
         :param condition: Conditional for filtering file types.
         [f for f in dir.iterdir() if condition]
         :type condition: str
-
-        Returns a list of the file names in dir in alphabetical order.
         """
         if condition:
             filepaths = [f for f in dir.iterdir() if condition] #type: ignore
@@ -131,7 +162,9 @@ class ProcessingState:
                                  diagnostic_mode : bool = False
                                  ) -> pathlib.PurePath:
         """
-        Docstring for generate_report_skeleton
+        Generates a markdown file skeleton with placeholder headings for
+        each dataset in the experiment folder and subheadings for each 
+        processing step.
         
         :param diagnostic_mode: Set to True to print information about 
         report generation.
@@ -139,25 +172,22 @@ class ProcessingState:
         :return: Path to the .md file of the report.
         :rtype: PurePath
         """
-        report_file_name = f'{self.raw_data_dir.name}-report.md'
+        report_file_name = f'{self.experiment_name}-report.md'
         self.report_file = self.reports_dir / report_file_name
-        report_file = self.report_file
-
-        self.report_file.touch(exist_ok = True)
 
         file_names_list = self.get_file_names(
                                             self.raw_data_dir, 
                                             "not f.__contains__('.'')")
 
-        with report_file.open(mode='a') as f:
-            f.write(f"# Data Processing Report for {self.experiment_name}\n\n")
+        self.report_file.write_text(f"# Data Processing Report for {self.experiment_name}\n\n")
 
+        with self.report_file.open(mode='a') as f:
             for fname in file_names_list:
                 f.write(f"# {fname}\n\n")
 
                 for step in self.steps_list:
                     f.write(f"## {step}\n")
-                    f.write("(placeholder)\n\n")
+                    f.write("placeholder\n\n")
 
                 f.write("\n")
 
@@ -167,31 +197,58 @@ class ProcessingState:
             print(f"Report skeleton created at {this_moment} with " \
                   f"{len(file_names_list)} files.")
 
-        return report_file
+        return self.report_file
     
-    def update_report(self, filename : str, 
+    def prepare_files(self) -> None:
+        '''
+        Takes any TimeSpec files (no file extension) in the load dir
+        and saves them as an xarray DataArray in a dataset, saving
+        metadata from original filename in dataset.attrs, then saves
+        the .nc files to the save directory.
+        '''
+        filepaths_list = [f for f in self.load_dir.iterdir() 
+                    if not str(f).__contains__(".")]
+        
+        for filepath in filepaths_list:
+            dataset = TRRDataset(filepath)
+            save_path = self.save_dir / f'{dataset.set_number}.nc'
+            self.__previous_step = 'raw'
+
+            try:
+                dataset.to_netcdf(path = str(save_path))
+            except Exception:
+                print("Error saving DataArray to NetCDF. " \
+                      "Path may be too long.")
+                print(f"save_path was: {str(save_path)}")
+
+        return None
+    
+    def update_report(self, dataset : TRRDataset, 
                       caption : str = '', 
                       include_plot : bool = True):
         """
-        Docstring for update_report
+        Updates the markdown report file for this experiment with plot
+        generated by the current processing step and adds the caption
+        if included.
     
-        :param filename: identifies the dataset to place plots and text 
+        :param dataset: identifies the dataset to place plots and text 
         under correct heading in the report skeleton.
-        :type filename: str
+        :type filename: xr.Dataset
         :param caption: Text to include in report section.
         :type caption: str
         :param include_plot: Set to False if not including a plot in 
         this section.
         :type include_plot: bool
         """
-        content = self.report_file.read_text()
-        
+        filename = dataset.datafile
+        set_number = dataset.set_number
         section = self.__current_step
-        pattern = rf"(# {re.escape(filename)}[\s\S]*?## " \
-                     rf"{re.escape(section)}\n)(\(placeholder\))"
-
+        
         if include_plot:
-            plot_path = str(self.plot_rel_path)
+            plot_save_path = (self.plots_dir / 
+                              f'{set_number}-{self.__current_step}.png')
+            plot_rel_path = f"..{str(plot_save_path).split(r"TRR")[-1]}"
+            plot_path = str(plot_rel_path).replace("\\", "\\\\")
             replacement = rf"\1![]({plot_path})"
         else:
             replacement = ''
@@ -199,31 +256,32 @@ class ProcessingState:
         if caption:
             replacement += f'\n\n*{caption}'
         
+        # Open existing report text, find placeholders, and insert new content.
+        content = self.report_file.read_text()
+        pattern = rf"(# {re.escape(filename)}[\s\S]*?## {re.escape(section)}\n)placeholder"
         new_content, count = re.subn(pattern, replacement, content, count=1)
 
         if count == 0:
-            raise ValueError(
-                f"Placeholder not found for {filename} / {section}"
-                )
+            raise ValueError(\
+                f"Placeholder not found for {filename} / {section}")
 
         with self.report_file.open(mode = 'a') as f:
             f.write(new_content)
 
         return None
-    
+
     def run_noise_removal_process(self):
-        filepaths_list = [f for f in self.load_dir.iterdir() 
-                          if not str(f).__contains__(".")]
+        filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
-        for filepath in filepaths_list:
-            filename = filepath.name
-            set_number = filename.split('-')[0]
-            plot_save_path = (self.plots_dir / 
-                              f'{set_number}-{self.__current_step}.png')
+        for filepath in filepaths_list:         
+            # Load dataset into memory then close file to allow overwrite
+            dataset = TRRDataset.open_dataset(filepath)
+            dataset.load()
+            dataset.close()
 
-            data_array = pp.prepare_data_array(filepath)
-
-            data_array_original = data_array.copy()
+            # Make two copies of existing data, one to 
+            data_array = dataset[self.__previous_step].copy()
+            data_array_original = dataset[self.__previous_step].copy()
 
             # Create interactive plot
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -231,10 +289,14 @@ class ProcessingState:
             fig.canvas.mpl_connect("button_press_event", remover.onclick)
             remover.update_plot()
             pp.add_noise_removal_buttons(fig, ax, remover)
-            
             plt.show()
 
             final_selected_points = remover.selected_points
+
+            # Set plot save path
+            set_number = dataset.set_number
+            plot_save_path = (self.plots_dir / 
+                              f'{set_number}-{self.__current_step}.png')
 
             # Plot results of noise removal
             plt.figure(figsize=(10, 5))
@@ -247,31 +309,15 @@ class ProcessingState:
             plt.ylabel("Reflectance (arb. units)")
             plt.title(f"{set_number} noise removal")
             plt.savefig(fname = str(plot_save_path))
-            plt.show()
-            
-            # Save data array in format usable by xarray module for next 
-            # processing stage
-            save_path = self.save_dir / f'{set_number}.nc'   
+            plt.show() 
 
-            # Create dataset to save raw and processed data in one object
-            dataset = xr.Dataset({'raw' : data_array_original, 
-                                  self.__current_step : data_array
-                                  })
-            dataset.attrs = data_array_original.attrs
-    
-            try:
-                dataset.to_netcdf(path = str(save_path))
-            except Exception:
-                print("Error saving DataArray to NetCDF. " \
-                      "Check if path length is too long.")
-                print(f"save_path was: {str(save_path)}")   
+            # Update report
+            self.update_report(dataset)
 
-            # Get relative path from report to plot
-            # Kind of a hacky way of finding the plot path relative to the
-            # report path. Perhaps can improve later.
-            self.plot_rel_path = f"..{str(plot_save_path).split(r"TRR")[-1]}"
+            # Add processed data to dataset and save
+            dataset[self.__current_step] = data_array
+            dataset.to_netcdf(path = self.save_dir / set_number, mode = 'a') 
 
-            self.update_report(filename)
         return
 
     def normalize_data(self):
@@ -279,17 +325,13 @@ class ProcessingState:
         save_dir = self.save_dir
 
         for filepath in filepaths_list:
-            filename = filepath.name
+            # Load dataset into memory then close file to allow overwrite
             dataset = xr.open_dataset(filepath)
-
-            # Load dataset into memory and close file handle so we can 
-            # overwrite safely
             dataset.load()
             dataset.close()
 
-            # Get previous step name and load data
-            prev_step = self.steps_list[self.__step_number - 1]
-            data_array = dataset[prev_step].copy()
+            # Load data from the previous processing step
+            data_array = dataset[self.__previous_step].copy()
 
             # Check for existing values for scale factor and r0, 
             # and set to 1 if missing.
@@ -305,10 +347,9 @@ class ProcessingState:
             data_array = pp.subtract_background(data_array, threshold = -2)
             data_array = pp.divide_out_factors(data_array)
 
-            # Add the processed data to the dataset
+            # Add the processed data to the dataset and save
             dataset[self.__current_step] = data_array
-
-            # Save using mode = a to append new data to the dataset file.
+            filename = filepath.name
             dataset.to_netcdf(path = save_dir / filename, mode = 'a')
         return None
     
@@ -316,23 +357,12 @@ class ProcessingState:
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
         for filepath in filepaths_list:
-            dataset = xr.open_dataset(filepath)
-            set_number = filepath.name.split(".nc")[0]
-            plot_save_path = (self.plots_dir / 
-                              f"{set_number}-{self.__current_step}.png")
-            # Load dataset into memory so .values is available, then close file 
-            # to allow overwrite
+            # Load dataset into memory then close file to allow overwrite
+            dataset = TRRDataset.open_dataset(filepath)
             dataset.load()
             dataset.close()
 
-            try:
-                data_array = dataset['normalized'].copy()
-            except:
-                print("No variable named 'normalized' in the dataset. " \
-                "Check that your processed data saved correctly during the " \
-                "normalization step. Canceling subtraction step.")
-                return None
-
+            data_array = dataset[self.__previous_step].copy()
             data_array = data_array.sel(
                 time=~data_array.get_index("time").duplicated())
 
@@ -363,13 +393,14 @@ class ProcessingState:
                 params, _ = pp.curve_fit(
                     exp_decay, masked_da.time, masked_da.values, 
                     p0=initial_guess, nan_policy='omit')
-                
+                time_constant = params[0]
+
                 fit_da = xr.DataArray(
                     exp_decay(data_array.time.values, *params),
                     dims = data_array.dims,
                     coords = data_array.coords, 
                     name = 'fit')
-                
+
                 # Subtract fit from the original data, unmasked.
                 processed_masked = xr.DataArray(
                     original_values - fit_da.values,
@@ -382,8 +413,6 @@ class ProcessingState:
                 fitted_data_array = processed_masked.where(
                     data_array.time.values >= min_time)
                 subtracted_data = fitted_data_array.values.copy()
-
-                time_constant = params[0]
 
             except RuntimeError:
                 print("Curve fit was unsuccessful. Subtracting DC component instead.")
@@ -399,21 +428,25 @@ class ProcessingState:
                 name = 'processed'
             )
 
+            set_number = filepath.name.split(".nc")[0]
+            plot_save_path = (self.plots_dir / 
+                              f"{set_number}-{self.__current_step}.png")
+            
             plt.figure(figsize=(10, 5))
             plt.plot(data_array.time, processed_data)
             plt.xlabel("Time (ps)")
             plt.ylabel("Differential reflectance")
             plt.title(f"{set_number} Decay Subtracted")
-            plt.savefig(fname = f"{plot_save_path}")
+            plt.savefig(fname = str(plot_save_path))
             plt.show()
 
-            self.update_report(filename)
+            self.update_report(dataset)
             
             # Add time constant of subtracted decay to attributes
             processed_data.attrs['time_constant'] = time_constant
 
             # Add subtracted data to dataset
-            dataset['subtracted'] = processed_data
+            dataset[self.__current_step] = processed_data
             dataset.attrs['time_constant'] = time_constant
 
             # Generate save path
@@ -424,3 +457,4 @@ class ProcessingState:
             dataset.to_netcdf(path = str(save_path), mode = 'a')
         
         return
+
