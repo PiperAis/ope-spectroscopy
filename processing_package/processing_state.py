@@ -16,7 +16,6 @@ sys.path.append(str(THIS_DIR))
 import processing_package as pp
 import config
 from . import exp_decay
-from . import trr_dataset
 from trr_dataset import TRRDataset
 
 class ProcessingState:
@@ -55,7 +54,7 @@ class ProcessingState:
         self.plots_dir = config.PLOTS_DIR / experiment_name
 
         self.check_directory_existence()
-        self.prepare_files
+        self.prepare_files()
     
     @property
     def steps_list(self):

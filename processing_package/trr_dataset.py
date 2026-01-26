@@ -36,15 +36,21 @@ import pandas as pd
 import pathlib
 from pathlib import Path
 import re
-from scipy.optimize import curve_fit
 import xarray as xr
 from xarray import Dataset
 
 xr.set_options(keep_attrs=True)
 
-from . import fitting_functions as ff
-
 class TRRDataset(Dataset):
+    __slots__ = (
+        'datafile',
+        'set_number', 
+        'sample',
+        'field',
+        'scale_factor',
+        'rzero'
+    ) 
+
     def __init__(self, filepath : pathlib.PurePath, input_file_type : str = 'TimeSpec'):
         self.filepath = filepath
         self.datafile = filepath.name
@@ -58,11 +64,11 @@ class TRRDataset(Dataset):
             super().__init__(ds._obj)
             self.attrs.update(ds.attrs)
             
-        self.set_number = self.attrs['set number']
-        self.field = self.attrs['field']
-        self.sample = self.attrs['sample']
-        self.scale_factor = self.attrs['scale factor']
-        self.rzero = self.attrs['rzero']
+        self.set_number = self.__getattr__('set number')
+        self.field = self.__getattr__('field')
+        self.sample = self.__getattr__('sample')
+        self.scale_factor = self.__getattr__('scale factor')
+        self.rzero = self.__getattr__('rzero')
         
         return
     
@@ -82,7 +88,8 @@ class TRRDataset(Dataset):
             instance.rzero = instance.attrs.get('rzero', 0)
             return instance
         else:
-            raise ValueError("open_dataset is for .nc files only")
+            instance = cls.__new__(cls)
+            instance.__init__(filepath)
     
     def gen_from_file(self, filepath : pathlib.PurePath, input_file_type: str = 'TimeSpec'):
 
@@ -250,30 +257,30 @@ def divide_out_factors(data_array : xr.DataArray) -> xr.DataArray:
     data_array.values = data_array.values / (r_zero * scale_factor)
     return data_array
 
-def subtract_biexponential_decay(
-        x_data, 
-        y_data, 
-        time_constant1 : int = 50, 
-        time_constant2 : int = 175):
-    """
-    Fits a bi-exponential decay to the data and subtracts it, then 
-    plots the original data with the fit and returns the corrected data.
-    """
+# def subtract_biexponential_decay(
+#         x_data, 
+#         y_data, 
+#         time_constant1 : int = 50, 
+#         time_constant2 : int = 175):
+#     """
+#     Fits a bi-exponential decay to the data and subtracts it, then 
+#     plots the original data with the fit and returns the corrected data.
+#     """
 
-    initial_guess = (y_data[0], time_constant1, y_data[0]/2, time_constant2, 
-                     np.mean(y_data))
-    params, _ = curve_fit(ff.bi_exp_decay, x_data, y_data, p0=initial_guess)
+#     initial_guess = (y_data[0], time_constant1, y_data[0]/2, time_constant2, 
+#                      np.mean(y_data))
+#     params, _ = curve_fit(ff.bi_exp_decay, x_data, y_data, p0=initial_guess)
 
-    # Generate the fitted curve for all time points
-    fitted_curve = ff.bi_exp_decay(x_data, *params)
+#     # Generate the fitted curve for all time points
+#     fitted_curve = ff.bi_exp_decay(x_data, *params)
 
-    # Subtract fitted curve from original data
-    y_corrected = y_data - fitted_curve
+#     # Subtract fitted curve from original data
+#     y_corrected = y_data - fitted_curve
 
-    plt.plot(x_data, y_data)
-    plt.plot(x_data, fitted_curve)
-    plt.title("Fit")
-    plt.show()
+#     plt.plot(x_data, y_data)
+#     plt.plot(x_data, fitted_curve)
+#     plt.title("Fit")
+#     plt.show()
 
-    # Return new data array
-    return y_corrected
+#     # Return new data array
+#     return y_corrected
