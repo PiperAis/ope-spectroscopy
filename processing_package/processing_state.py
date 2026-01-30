@@ -16,7 +16,7 @@ sys.path.append(str(THIS_DIR))
 import processing_package as pp
 import config
 from . import exp_decay
-from trr_dataset import TRRDataset
+from .trr_dataset import TRRDataset
 
 class ProcessingState:
     def __init__(self, 
@@ -211,7 +211,6 @@ class ProcessingState:
         for filepath in filepaths_list:
             dataset = TRRDataset(filepath)
             save_path = self.save_dir / f'{dataset.set_number}.nc'
-            self.__previous_step = 'raw'
 
             try:
                 dataset.to_netcdf(path = str(save_path))
@@ -219,6 +218,8 @@ class ProcessingState:
                 print("Error saving DataArray to NetCDF. " \
                       "Path may be too long.")
                 print(f"save_path was: {str(save_path)}")
+
+        self.__previous_step = 'raw'
 
         return None
     
@@ -239,7 +240,7 @@ class ProcessingState:
         this section.
         :type include_plot: bool
         """
-        filename = dataset.datafile
+        filename = dataset.rawfilename
         set_number = dataset.set_number
         section = self.__current_step
         
@@ -275,12 +276,12 @@ class ProcessingState:
         for filepath in filepaths_list:         
             # Load dataset into memory then close file to allow overwrite
             dataset = TRRDataset.open_dataset(filepath)
-            dataset.load()
-            dataset.close()
+            dataset.load() # type: ignore
+            dataset.close() # type: ignore
 
             # Make two copies of existing data, one to 
-            data_array = dataset[self.__previous_step].copy()
-            data_array_original = dataset[self.__previous_step].copy()
+            data_array = dataset[self.__previous_step].copy() # type: ignore
+            data_array_original = dataset[self.__previous_step].copy() # type: ignore
 
             # Create interactive plot
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -293,7 +294,7 @@ class ProcessingState:
             final_selected_points = remover.selected_points
 
             # Set plot save path
-            set_number = dataset.set_number
+            set_number = dataset.set_number # type: ignore
             plot_save_path = (self.plots_dir / 
                               f'{set_number}-{self.__current_step}.png')
 
@@ -311,11 +312,13 @@ class ProcessingState:
             plt.show() 
 
             # Update report
-            self.update_report(dataset)
+            self.update_report(dataset) # type: ignore
 
+            savepath = str(self.save_dir / set_number)
+            savepath.replace('\\\\', '\\')
             # Add processed data to dataset and save
-            dataset[self.__current_step] = data_array
-            dataset.to_netcdf(path = self.save_dir / set_number, mode = 'a') 
+            dataset[self.__current_step] = data_array # type: ignore
+            dataset.to_netcdf(path = savepath, mode = 'a')  # type: ignore
 
         return
 
@@ -325,7 +328,7 @@ class ProcessingState:
 
         for filepath in filepaths_list:
             # Load dataset into memory then close file to allow overwrite
-            dataset = xr.open_dataset(filepath)
+            dataset = TRRDataset(filepath)
             dataset.load()
             dataset.close()
 
@@ -357,7 +360,7 @@ class ProcessingState:
 
         for filepath in filepaths_list:
             # Load dataset into memory then close file to allow overwrite
-            dataset = TRRDataset.open_dataset(filepath)
+            dataset = TRRDataset(filepath)
             dataset.load()
             dataset.close()
 

@@ -4,29 +4,16 @@ collected using TimeSpec software. Expects file naming conventions
 that use hyphens to separate pieces of information: \n
 
 [Dataset number]-flake[sample name]-[bfield]T-[scale factor]SF-[R0]mV \n
-Separate any further metadata with hyphens and include units or
-identifier after the value.
+Separate any further metadata with hyphens and include units after the 
+value. Optionally, include an identifier before the value - planning to
+implement handling for user defined metadata in filename in the future.
 
 Use n to designate negative fields and p instead of . in the file name. \n
-\n\n
-Example:\n
-01-flake1a-n0p2T-180kSF-118mV-532pump20uW
+Example file name:\n
+01-flake1a-n0p2T-180kSF-118mV-pumpwl532nm-pumppwr20uW
 
 \n\n
-V 1.3
-\n\n
-2026-01-21 \n
-Moved many functions into the ProcessingState class, and updated to
-PEP8 conventions.
-
-Changelog:
-\n\n
-1.2: 2025-09-09 \n
-To move in relevant functions that were in other modules and improve
-commenting and type requirements.
-\n\n
-1.1: 2025-05-12 \n
-To handle r0  information included in file name
+V 1.0
 
 author: @piper
 """
@@ -36,25 +23,30 @@ import pandas as pd
 import pathlib
 from pathlib import Path
 import re
+from scipy.optimize import curve_fit
 import xarray as xr
 from xarray import Dataset
 
 xr.set_options(keep_attrs=True)
 
+from . import fitting_functions as ff
+
 class TRRDataset(Dataset):
     __slots__ = (
-        'datafile',
+        'rawfilename',
         'set_number', 
         'sample',
         'field',
         'scale_factor',
-        'rzero'
+        'rzero',
+        'filepath'
     ) 
 
     def __init__(self, filepath : pathlib.PurePath, input_file_type : str = 'TimeSpec'):
-        self.filepath = filepath
-        self.datafile = filepath.name
         
+        self.rawfilename = filepath.name
+        self.filepath = str(filepath)
+
         if filepath.suffix != '.nc':
             array = self.gen_from_file(filepath, input_file_type)
             super().__init__(data_vars={'raw': array}, attrs=array.attrs)
@@ -75,21 +67,20 @@ class TRRDataset(Dataset):
     @classmethod
     def open_dataset(cls, filepath: pathlib.PurePath):
         if filepath.suffix == '.nc':
-            ds = xr.open_dataset(filepath)
+            ds = xr.open_dataset(filepath, engine = 'netcdf4')
             instance = cls.__new__(cls)
             Dataset.__init__(instance, ds._obj)
             instance.attrs.update(ds.attrs)
             instance.filepath = filepath
-            instance.datafile = filepath.name
-            instance.set_number = instance.attrs.get('set number', str(filepath).split('-')[0])
+            instance.rawfilename = filepath.name
+            instance.set_number = instance.attrs.get('set number', filepath.name.split('-')[0])
             instance.field = instance.attrs.get('field', 0)
             instance.sample = instance.attrs.get('sample', '')
             instance.scale_factor = instance.attrs.get('scale factor', 1)
             instance.rzero = instance.attrs.get('rzero', 0)
             return instance
         else:
-            instance = cls.__new__(cls)
-            instance.__init__(filepath)
+            xr.open_dataset(filepath, engine = 'netcdf4')
     
     def gen_from_file(self, filepath : pathlib.PurePath, input_file_type: str = 'TimeSpec'):
 
@@ -122,7 +113,7 @@ class TRRDataset(Dataset):
                       'scale factor' : self.get_scale_factor(),
                       'rzero' : self.get_rzero(),
                       'datafile' : filepath.name,
-                      'set number' : str(filepath).split('-')[0]
+                      'set number' : filepath.name.split('-')[0]
                       }
 
         array = xr.DataArray(data = raw_data[data_index], 
@@ -140,7 +131,7 @@ class TRRDataset(Dataset):
         period, and the field is separated from other information by '-'
         """
         # Search for the regex pattern denoting bfield
-        match = re.search(r'-n?\d+(p\d+)?T', str(self.datafile))
+        match = re.search(r'-n?\d+(p\d+)?T', str(self.rawfilename))
 
         # Convert filename formatting to float
         if match:
@@ -159,7 +150,7 @@ class TRRDataset(Dataset):
         sample' if not found. 
         """
         # Search for the regex pattern denoting flake name
-        match = re.search(r'flake.*-', str(self.datafile))
+        match = re.search(r'flake.*-', str(self.rawfilename))
 
         # Format sample name
         if match:
@@ -177,7 +168,7 @@ class TRRDataset(Dataset):
         Returns 1 if pattern is not found. 
         """
         # Search for regex pattern denoting scale factor
-        match = re.search(r'-\d+kSF', str(self.datafile))
+        match = re.search(r'-\d+kSF', str(self.rawfilename))
 
         # Format scale factor
         if match:
@@ -196,7 +187,7 @@ class TRRDataset(Dataset):
         pattern is not found. 
         """
         # Search for regex pattern denoting r_0
-        match = re.search(r'-\d+p?(\d+)?mV', str(self.datafile))
+        match = re.search(r'-\d+p?(\d+)?mV', str(self.rawfilename))
 
         # Format value for return
         if match:
@@ -208,6 +199,8 @@ class TRRDataset(Dataset):
             return rzero
         else:
             return 1
+        
+    
 
 def mask_data_array(
         data_array : xr.DataArray, 
@@ -257,30 +250,30 @@ def divide_out_factors(data_array : xr.DataArray) -> xr.DataArray:
     data_array.values = data_array.values / (r_zero * scale_factor)
     return data_array
 
-# def subtract_biexponential_decay(
-#         x_data, 
-#         y_data, 
-#         time_constant1 : int = 50, 
-#         time_constant2 : int = 175):
-#     """
-#     Fits a bi-exponential decay to the data and subtracts it, then 
-#     plots the original data with the fit and returns the corrected data.
-#     """
+def subtract_biexponential_decay(
+        x_data, 
+        y_data, 
+        time_constant1 : int = 50, 
+        time_constant2 : int = 175):
+    """
+    Fits a bi-exponential decay to the data and subtracts it, then 
+    plots the original data with the fit and returns the corrected data.
+    """
 
-#     initial_guess = (y_data[0], time_constant1, y_data[0]/2, time_constant2, 
-#                      np.mean(y_data))
-#     params, _ = curve_fit(ff.bi_exp_decay, x_data, y_data, p0=initial_guess)
+    initial_guess = (y_data[0], time_constant1, y_data[0]/2, time_constant2, 
+                     np.mean(y_data))
+    params, _ = curve_fit(ff.bi_exp_decay, x_data, y_data, p0=initial_guess)
 
-#     # Generate the fitted curve for all time points
-#     fitted_curve = ff.bi_exp_decay(x_data, *params)
+    # Generate the fitted curve for all time points
+    fitted_curve = ff.bi_exp_decay(x_data, *params)
 
-#     # Subtract fitted curve from original data
-#     y_corrected = y_data - fitted_curve
+    # Subtract fitted curve from original data
+    y_corrected = y_data - fitted_curve
 
-#     plt.plot(x_data, y_data)
-#     plt.plot(x_data, fitted_curve)
-#     plt.title("Fit")
-#     plt.show()
+    plt.plot(x_data, y_data)
+    plt.plot(x_data, fitted_curve)
+    plt.title("Fit")
+    plt.show()
 
-#     # Return new data array
-#     return y_corrected
+    # Return new data array
+    return y_corrected
