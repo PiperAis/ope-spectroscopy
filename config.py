@@ -17,5 +17,3 @@ DATA_DIR = TRR_DIR / "raw_data"
 PROCESSED_DATA_DIR = TRR_DIR / "processed"
 
 REPORTS_DIR = TRR_DIR / "reports"
-
-PLOTS_DIR = REPORTS_DIR / "plots"
