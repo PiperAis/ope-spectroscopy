@@ -154,19 +154,6 @@ class ProcessingState:
         else:
             return plot_save_path
 
-    def update_dataset(self, dataset, array):
-        dataset[self.__current_step] = array
-        return
-
-    def save_data(self, dataset, filename_modifier : str = ''):
-        set_number = dataset.attrs['set number']
-        if filename_modifier:
-            save_path = self.save_dir / f'{set_number}{filename_modifier}.nc'
-        else:
-            save_path = self.save_dir / f'{set_number}.nc'
-        dataset.to_netcdf(path = save_path, mode = 'a')
-        return
-
     def get_file_names(self, 
                        dir : pathlib.PurePath, 
                        condition : str = ''
@@ -274,7 +261,6 @@ class ProcessingState:
         :type include_plot: bool
         """
         filename = dataset.rawfilename
-        set_number = dataset.set_number
         section = self.__current_step
         
         if include_plot:
@@ -308,10 +294,7 @@ class ProcessingState:
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
         for filepath in filepaths_list:         
-            # Load dataset into memory then close file to allow overwrite
-            dataset = TRRDataset.open_dataset(filepath)
-            dataset.load() # type: ignore
-            dataset.close() # type: ignore
+            dataset = TRRDataset(filepath)
 
             # Make two copies of existing data, one to 
             data_array = dataset[self.__previous_step].copy() # type: ignore
@@ -327,7 +310,6 @@ class ProcessingState:
 
             final_selected_points = remover.selected_points
 
-            # Plot results of noise removal
             plt.figure(figsize=(10, 5))
             plt.plot(data_array_original.time, data_array_original, 
                         label="Original Data", linestyle="dotted", alpha=0.5)
@@ -344,8 +326,8 @@ class ProcessingState:
             self.update_report(dataset)
 
             # Add processed data to dataset and save
-            self.update_dataset(dataset, data_array)
-            self.save_data(dataset)
+            dataset.add_array(self.__current_step, data_array)
+            dataset.save()
         return
 
     def normalize_data(self):
@@ -358,10 +340,7 @@ class ProcessingState:
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
         for filepath in filepaths_list:
-            # Load dataset into memory then close file to allow overwrite
-            dataset = xr.open_dataset(filepath)
-            dataset.load()
-            dataset.close()
+            dataset = TRRDataset(filepath)
 
             # Load data from the previous processing step
             data_array = dataset[self.__previous_step].copy()
@@ -381,8 +360,8 @@ class ProcessingState:
             data_array = pp.divide_out_factors(data_array)
 
             # Add the processed data to the dataset and save
-            self.update_dataset(dataset, data_array)
-            self.save_data(dataset)
+            dataset.add_array(self.__current_step, data_array)
+            dataset.save()
         return None
     
     def subtract_decay(self):
@@ -390,10 +369,7 @@ class ProcessingState:
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
         for filepath in filepaths_list:
-            # Load dataset into memory then close file to allow overwrite
-            dataset = xr.open_dataset(filepath)
-            dataset.load()
-            dataset.close()
+            dataset = TRRDataset(filepath)
 
             data_array = dataset[self.__previous_step].copy()
             data_array = data_array.sel(
@@ -475,8 +451,8 @@ class ProcessingState:
             processed_data.attrs['time_constant'] = time_constant
 
             # Add subtracted data to dataset
-            self.update_dataset(dataset, processed_data)
-            self.save_data(dataset)
+            dataset.add_array(self.__current_step, data_array)
+            dataset.save()
         return
 
     def da_fourier_transform(self, apply_hanning_window : bool = True, max_frequency : float = 100):
@@ -506,10 +482,7 @@ class ProcessingState:
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
         for filepath in filepaths_list: 
-            # Load dataset into memory then close file to allow overwrite
-            dataset = xr.open_dataset(filepath)
-            dataset.load()
-            dataset.close()
+            dataset = TRRDataset(filepath)
 
             data_array = dataset[self.__previous_step].copy()
             data_array = data_array.sel(
@@ -547,6 +520,6 @@ class ProcessingState:
             
             self.update_report(dataset) #type: ignore
 
-            self.save_data(fft_dataarray, filename_modifier='-fft')
+            fft_dataarray.save(filename_modifier='-fft')
 
         return

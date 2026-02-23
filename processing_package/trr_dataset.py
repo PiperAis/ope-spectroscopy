@@ -26,6 +26,7 @@ import re
 from scipy.optimize import curve_fit
 import xarray as xr
 from xarray import Dataset
+from typing import Self
 
 xr.set_options(keep_attrs=True)
 
@@ -62,25 +63,10 @@ class TRRDataset(Dataset):
         self.scale_factor = self.__getattr__('scale factor')
         self.rzero = self.__getattr__('rzero')
         
-        return
-    
-    @classmethod
-    def open_dataset(cls, filepath: pathlib.PurePath) -> TRRDataset:
-        if filepath.suffix == '.nc':
-            ds = xr.open_dataset(filepath, engine = 'netcdf4')
-            instance = cls.__new__(cls)
-            Dataset.__init__(instance, ds._obj)
-            instance.attrs.update(ds.attrs)
-            instance.filepath = filepath
-            instance.rawfilename = filepath.name
-            instance.set_number = instance.attrs.get('set number', filepath.name.split('-')[0])
-            instance.field = instance.attrs.get('field', 0)
-            instance.sample = instance.attrs.get('sample', '')
-            instance.scale_factor = instance.attrs.get('scale factor', 1)
-            instance.rzero = instance.attrs.get('rzero', 0)
-            return instance
-        else:
-            xr.open_dataset(filepath, engine = 'netcdf4')
+        self.load()
+        self.close()
+
+        return self
     
     def gen_from_file(self, filepath : pathlib.PurePath, input_file_type: str = 'TimeSpec'):
 
@@ -199,8 +185,19 @@ class TRRDataset(Dataset):
             return rzero
         else:
             return 1
+
+    def add_array(self, step_name : str, array : xr.DataArray):
+        self[step_name] = array
+        return
+
+    def save(self, filename_modifier : str = ''):
+        if filename_modifier:
+            save_path = self.save_dir / f'{self.set_number}{filename_modifier}.nc'
+        else:
+            save_path = self.save_dir / f'{self.set_number}.nc'
+        self.to_netcdf(path = save_path, mode = 'a')
+        return
         
-    
 
 def mask_data_array(
         data_array : xr.DataArray, 
