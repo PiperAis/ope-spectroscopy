@@ -1,5 +1,7 @@
 """
 Docstring for processing_state.py
+
+To do: implement built-in xarray fitting for the subtraction step
 """
 
 import matplotlib.pyplot as plt
@@ -43,15 +45,15 @@ class ProcessingState:
             raise ValueError("Experiment name parameter is required to " \
             "accurately locate data.")
 
-        # Initialize properties
         self.__step_number = 0
         self.__current_step = self.__steps_list[0]
         self.__previous_step = None
         self.raw_data_dir = config.DATA_DIR / experiment_name
         self.save_dir = config.PROCESSED_DATA_DIR / experiment_name
-        self.load_dir = self.raw_data_dir
-        self.reports_dir = config.REPORTS_DIR
-        self.plots_dir = config.PLOTS_DIR / experiment_name
+        self.load_dir = self.save_dir
+        self.reports_dir = config.REPORTS_DIR / experiment_name
+        self.plots_dir = self.reports_dir
+        self.babyfresh = True
 
         self.check_directory_existence()
         self.prepare_files()
@@ -67,7 +69,7 @@ class ProcessingState:
         elif not len(proposed_list):
             raise AttributeError("Steps list must have at least one element.")
         else:
-            raise ValueError("All steps must be strings.")
+            raise TypeError("All steps must be strings.")
     
     @property
     def current_step(self):
@@ -120,9 +122,15 @@ class ProcessingState:
         '''
         Updates variables that track the current and previous
         processing steps and sets the new load directory as the save
-        directory from the previous step. \n
+        directory from the previous step. Ensures directories exist. \n
         Returns a string that states which step was just initialized.
         '''
+        # If this is the first step, initialize but don't advance
+        if self.babyfresh:
+            self.babyfresh = False
+            return 'Now we\'re gettin started'
+        
+        # Otherwise, move forward along the step chain
         self.__step_number += 1
         self.__previous_step = self.__current_step
         self.__current_step = self.steps_list[self.__step_number]
@@ -133,6 +141,31 @@ class ProcessingState:
         self.check_directory_existence()
 
         return f'Initialized step: {self.__current_step}'
+    
+    def get_plot_save_path(self, dataset : xr.Dataset, as_string = True)-> str | pathlib.PurePath:
+        set_number = dataset.attrs['set number']
+        step = self.__current_step
+        stepstr = step.replace(' ', '-')
+        plot_save_path = (self.plots_dir / 
+                          f"{set_number}-{stepstr}.png")
+        pathstr = str(plot_save_path)
+        if as_string:
+            return pathstr
+        else:
+            return plot_save_path
+
+    def update_dataset(self, dataset, array):
+        dataset[self.__current_step] = array
+        return
+
+    def save_data(self, dataset, filename_modifier : str = ''):
+        set_number = dataset.attrs['set number']
+        if filename_modifier:
+            save_path = self.save_dir / f'{set_number}{filename_modifier}.nc'
+        else:
+            save_path = self.save_dir / f'{set_number}.nc'
+        dataset.to_netcdf(path = save_path, mode = 'a')
+        return
 
     def get_file_names(self, 
                        dir : pathlib.PurePath, 
@@ -205,7 +238,7 @@ class ProcessingState:
         metadata from original filename in dataset.attrs, then saves
         the .nc files to the save directory.
         '''
-        filepaths_list = [f for f in self.load_dir.iterdir() 
+        filepaths_list = [f for f in self.raw_data_dir.iterdir() 
                     if not str(f).__contains__(".")]
         
         for filepath in filepaths_list:
@@ -245,13 +278,12 @@ class ProcessingState:
         section = self.__current_step
         
         if include_plot:
-            plot_save_path = (self.plots_dir / 
-                              f'{set_number}-{self.__current_step}.png')
-            plot_rel_path = f"..{str(plot_save_path).split(r"TRR")[-1]}"
+            plot_path = self.get_plot_save_path(dataset, as_string=False)
+            plot_rel_path = plot_path.name #type: ignore
             plot_path = str(plot_rel_path).replace("\\", "\\\\")
             replacement = rf"\1![]({plot_path})"
         else:
-            replacement = ''
+            replacement = 'No plot included.'
         
         if caption:
             replacement += f'\n\n*{caption}'
@@ -265,12 +297,14 @@ class ProcessingState:
             raise ValueError(\
                 f"Placeholder not found for {filename} / {section}")
 
-        with self.report_file.open(mode = 'a') as f:
+        with self.report_file.open(mode = 'w') as f:
             f.write(new_content)
 
         return None
 
-    def run_noise_removal_process(self):
+    def remove_noise(self):
+        self.initialize_next_step()
+
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
         for filepath in filepaths_list:         
@@ -293,11 +327,6 @@ class ProcessingState:
 
             final_selected_points = remover.selected_points
 
-            # Set plot save path
-            set_number = dataset.set_number # type: ignore
-            plot_save_path = (self.plots_dir / 
-                              f'{set_number}-{self.__current_step}.png')
-
             # Plot results of noise removal
             plt.figure(figsize=(10, 5))
             plt.plot(data_array_original.time, data_array_original, 
@@ -307,28 +336,30 @@ class ProcessingState:
             plt.legend()
             plt.xlabel("Time (ps)")
             plt.ylabel("Reflectance (arb. units)")
-            plt.title(f"{set_number} noise removal")
-            plt.savefig(fname = str(plot_save_path))
-            plt.show() 
+            plt.title(f"{dataset.set_number} noise removal")
+            plt.savefig(fname = self.get_plot_save_path(dataset))
+            plt.clf()
 
             # Update report
-            self.update_report(dataset) # type: ignore
+            self.update_report(dataset)
 
-            savepath = str(self.save_dir / set_number)
-            savepath.replace('\\\\', '\\')
             # Add processed data to dataset and save
-            dataset[self.__current_step] = data_array # type: ignore
-            dataset.to_netcdf(path = savepath, mode = 'a')  # type: ignore
-
+            self.update_dataset(dataset, data_array)
+            self.save_data(dataset)
         return
 
     def normalize_data(self):
+        self.initialize_next_step()
+        try:
+            assert self.__current_step == 'normalized'
+        except Exception as e:
+            raise AssertionError('Initialized normalization step but current step does not match.', e)
+        
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
-        save_dir = self.save_dir
 
         for filepath in filepaths_list:
             # Load dataset into memory then close file to allow overwrite
-            dataset = TRRDataset(filepath)
+            dataset = xr.open_dataset(filepath)
             dataset.load()
             dataset.close()
 
@@ -350,17 +381,17 @@ class ProcessingState:
             data_array = pp.divide_out_factors(data_array)
 
             # Add the processed data to the dataset and save
-            dataset[self.__current_step] = data_array
-            filename = filepath.name
-            dataset.to_netcdf(path = save_dir / filename, mode = 'a')
+            self.update_dataset(dataset, data_array)
+            self.save_data(dataset)
         return None
     
     def subtract_decay(self):
+        self.initialize_next_step()
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
         for filepath in filepaths_list:
             # Load dataset into memory then close file to allow overwrite
-            dataset = TRRDataset(filepath)
+            dataset = xr.open_dataset(filepath)
             dataset.load()
             dataset.close()
 
@@ -429,34 +460,93 @@ class ProcessingState:
                 attrs = data_array.attrs,
                 name = 'processed'
             )
-
-            set_number = filepath.name.split(".nc")[0]
-            plot_save_path = (self.plots_dir / 
-                              f"{set_number}-{self.__current_step}.png")
             
             plt.figure(figsize=(10, 5))
             plt.plot(data_array.time, processed_data)
             plt.xlabel("Time (ps)")
             plt.ylabel("Differential reflectance")
-            plt.title(f"{set_number} Decay Subtracted")
-            plt.savefig(fname = str(plot_save_path))
-            plt.show()
+            plt.title(f"{dataset.attrs['set number']} Decay Subtracted")
+            plt.savefig(fname = self.get_plot_save_path(dataset))
+            plt.clf()
 
-            self.update_report(dataset)
+            self.update_report(dataset) #type: ignore
             
             # Add time constant of subtracted decay to attributes
             processed_data.attrs['time_constant'] = time_constant
 
             # Add subtracted data to dataset
-            dataset[self.__current_step] = processed_data
-            dataset.attrs['time_constant'] = time_constant
-
-            # Generate save path
-            filename = filepath.name
-            save_path = self.save_dir / filename
-
-            # Save dataset
-            dataset.to_netcdf(path = str(save_path), mode = 'a')
-        
+            self.update_dataset(dataset, processed_data)
+            self.save_data(dataset)
         return
 
+    def da_fourier_transform(self, apply_hanning_window : bool = True, max_frequency : float = 100):
+        '''
+        Fourier transforms data, divides frequencies by 1000 -
+        expecting ps input this outputs GHz frequencies.
+        
+        :param self: Description
+                '''   
+        def uniform_time_grid(time_vals, y_vals):
+                    """ Takes time values and returns a uniform time grid with the same or more points """
+                    from scipy.interpolate import interp1d
+                    num_points=len(y_vals)
+                    t_uniform = np.linspace(time_vals.min(), time_vals.max(), num_points)
+                    interp_func = interp1d(time_vals, y_vals, kind='linear')
+                    y_uniform = interp_func(t_uniform)
+                    
+                    return t_uniform, y_uniform
+        
+        self.initialize_next_step()
+        
+        prev_save_dir = self.save_dir
+        new_save_dir = prev_save_dir / 'FFT'    
+        self.save_dir = new_save_dir
+        self.check_directory_existence()
+        
+        filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
+
+        for filepath in filepaths_list: 
+            # Load dataset into memory then close file to allow overwrite
+            dataset = xr.open_dataset(filepath)
+            dataset.load()
+            dataset.close()
+
+            data_array = dataset[self.__previous_step].copy()
+            data_array = data_array.sel(
+                time=~data_array.get_index("time").duplicated())
+            
+            da = data_array.dropna('time')
+            y_vals = da.values.copy()
+            time_vals = da.time.values.copy()
+
+            time_vals, y_vals = uniform_time_grid(time_vals, y_vals)
+            if apply_hanning_window:
+                window = np.hanning(len(y_vals))
+                y_vals = y_vals * window
+            
+            dt = np.mean(np.diff(time_vals))
+            fft_result = np.fft.fft(y_vals)
+            fft_magnitude = np.abs(fft_result)
+            freqs = np.fft.fftfreq(len(y_vals), d=dt)
+            freqs = [f*1000 for f in freqs]
+
+            fft_dataarray = xr.DataArray(data = fft_magnitude, coords = {'frequency' : freqs}, name = 'raw', attrs = dataset.attrs)
+
+            freq_mask = (fft_dataarray.frequency >= 0) & (fft_dataarray.frequency <= max_frequency)
+            masked_array = fft_dataarray.where(freq_mask, drop = True)
+            # masked_array.plot.scatter()
+
+            plt.figure(figsize=(10, 5))
+            # plt.plot(freqs, fft_magnitude)
+            plt.plot(masked_array.frequency, masked_array.values)
+            plt.xlabel("Frequency (GHz)")
+            plt.ylabel("FFT Magnitude")
+            plt.title(f"{dataset.attrs['set number']} Fourier Transform")
+            plt.savefig(fname = self.get_plot_save_path(dataset))
+            plt.show()
+            
+            self.update_report(dataset) #type: ignore
+
+            self.save_data(fft_dataarray, filename_modifier='-fft')
+
+        return

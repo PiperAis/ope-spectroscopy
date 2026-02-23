@@ -65,7 +65,7 @@ class TRRDataset(Dataset):
         return
     
     @classmethod
-    def open_dataset(cls, filepath: pathlib.PurePath):
+    def open_dataset(cls, filepath: pathlib.PurePath) -> TRRDataset:
         if filepath.suffix == '.nc':
             ds = xr.open_dataset(filepath, engine = 'netcdf4')
             instance = cls.__new__(cls)
