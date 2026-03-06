@@ -12,6 +12,8 @@ THIS_DIR = Path(__file__).parent
 
 TRR_DIR = THIS_DIR.parent / "TRR"
 
+PL_DIR = THIS_DIR.parent / "PL"
+
 DATA_DIR = TRR_DIR / "raw_data"
 
 PROCESSED_DATA_DIR = TRR_DIR / "processed"

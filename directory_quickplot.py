@@ -1,31 +1,99 @@
 """
+v1.0 Updated 2026/03/06
 
+Currently set up to generate plots of all datasets in a PL experiment file.
+
+Change experiment_date variable to match the name of the folder containing your data.
+
+To do:
+- Implement saving
+- Use xarray instead of pandas
 """
 #%%
-from os.path import dirname, join, isfile, basename
+from os.path import dirname, isfile
 
 import numpy as np
 import matplotlib.pyplot as plt
-import glob
-import pathlib
+import pandas as pd
+from pathlib import Path
 import sys
 
-# Find code directory relative to our directory to import correct
-# version of pipersfunctions.
 THIS_DIR = dirname(__file__)
 sys.path.append(THIS_DIR)
 
-from pipersfunctions import quick_plot, read_spectrum, mask
+import config
+
+experiment_date = '2026-03-02'
+
+def norm(x):
+    return (x - np.min(x))/(np.max(x)-np.min(x))
+
+def read_spectrum(
+        filename : Path, 
+        normalize : bool = False, 
+        xEnergy : bool = True, 
+        delimiter : str = ',', 
+        umBlaze : bool = False):
+    """ 
+    Reads data from a txt file or CSV, including data collected using 
+    LightField. umBlaze = 1 sets a 22 nm shift, to compensate for a 
+    known calibration error with one of the gratings in the MRI lab. 
+
+    Returns 2 lists: x-axis (either WL or energy) and y-axis (intensity)
+    Returns the max intensity of the (un-normalized) data.
+    I can't remember why it does this.
+    """
+
+    data = pd.read_csv(file, delimiter = delimiter)
+    wavelength = data['Wavelength'].values
+
+    # Apply calibration adjustment
+    if umBlaze:
+        wavelength -= 22
+    
+    # Convert from wavelength to energy
+    energy = 1239.8/wavelength
+
+    intensity = data['Intensity'].values
+    maxIntensity = intensity.max()
+
+    if normalize:
+        intensity = norm(intensity)
+
+    if xEnergy:
+        return wavelength, intensity, maxIntensity
+    else:
+        return energy, intensity, maxIntensity
+
+def mask(xdata, ydata, xmin, xmax):
+    """
+    Returns 2 lists: masked x-var data and masked y-var data.
+    """
+    indicesWithinRange = [index for index, x in enumerate(xdata) 
+                          if xmin <= x <= xmax]
+    xdataMasked = xdata[indicesWithinRange]
+    ydataMasked = ydata[indicesWithinRange]
+    return xdataMasked, ydataMasked
+
+def quick_plot(title : str, x_var, y_var, 
+               x_label : str, y_label : str, 
+               highdef : bool = False) -> None:
+    if highdef == True:
+        plt.figure(dpi=400)
+    plt.title(title)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.plot(x_var, y_var)
+    plt.show()
 
 # Plot all in directory
 
-dir_relative_path = r"..\PL\raw_data\2025-04-30\D8-bsweep"
-directory = join(THIS_DIR, dir_relative_path)
+directory = config.PL_DIR / 'raw' / experiment_date
 
-for file in pathlib.Path(directory).glob('*'):
+for file in directory.iterdir():
     if isfile(file):
-        filename = basename(file)
+        filename = file.stem
         x, y, max = read_spectrum(file)
-        x, y = mask(x, y, 1.25, 1.41)
+        # x, y = mask(x, y, 1, 2)
         quick_plot(title = f'{filename}', x_var = x, y_var = y, x_label = 'Energy (ev)', y_label = 'PL (arb units)')
 # %%
