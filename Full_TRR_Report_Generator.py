@@ -38,13 +38,13 @@ if __name__ == "__main__":
     report_file = experiment.generate_report_skeleton()
 
     # --- Step 1: Remove noise --- #
-    experiment.run_noise_removal_process()
+    experiment.run_noise_remover()
         
     # --- Step 2: Processing (normalize and subtract decay) --- #
     
-    experiment.initialize_next_step()
-    experiment.normalize_data()
-    experiment.subtract_decay()
+    # experiment.initialize_next_step()
+    # experiment.normalize_data()
+    # experiment.subtract_decay()
 
 # # %%
 

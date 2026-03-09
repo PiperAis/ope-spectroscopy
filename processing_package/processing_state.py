@@ -88,6 +88,18 @@ class ProcessingState:
                 self.__previous_step = None
         else:
             raise ValueError("Step name not found in steps list.")
+    
+    @property
+    def previous_step(self):
+        step_num = self.__step_number - 1
+        if step_num >= 0:
+            previous_step = self.steps_list[step_num]
+        else:
+            previous_step = 'raw'
+        return previous_step
+
+    def __str__(self):
+        return f"Experiment from {self.experiment_name}. Steps: {self.steps_list}"
 
     def check_directory_existence(self):
         """
@@ -143,13 +155,12 @@ class ProcessingState:
         return f'Initialized step: {self.__current_step}'
     
     def get_plot_save_path(self, dataset : xr.Dataset, as_string = True)-> str | pathlib.PurePath:
-        set_number = dataset.attrs['set number']
         step = self.__current_step
         stepstr = step.replace(' ', '-')
         plot_save_path = (self.plots_dir / 
-                          f"{set_number}-{stepstr}.png")
-        pathstr = str(plot_save_path)
+                          f"{dataset.set_number}-{stepstr}.png")
         if as_string:
+            pathstr = str(plot_save_path)
             return pathstr
         else:
             return plot_save_path
@@ -195,8 +206,8 @@ class ProcessingState:
         self.report_file = self.reports_dir / report_file_name
 
         file_names_list = self.get_file_names(
-                                            self.raw_data_dir, 
-                                            "not f.__contains__('.'')")
+                                            dir = self.raw_data_dir, 
+                                            condition = "not f.__contains__('.'')")
 
         self.report_file.write_text(f"# Data Processing Report for {self.experiment_name}\n\n")
 
@@ -226,18 +237,15 @@ class ProcessingState:
         the .nc files to the save directory.
         '''
         filepaths_list = [f for f in self.raw_data_dir.iterdir() 
-                    if not str(f).__contains__(".")]
+                    if not str(f).__contains__(".")] # TimeSpec files lack a file extension
         
         for filepath in filepaths_list:
             dataset = TRRDataset(filepath)
-            save_path = self.save_dir / f'{dataset.set_number}.nc'
-
             try:
-                dataset.to_netcdf(path = str(save_path))
+                dataset.save(self.save_dir)
             except Exception:
                 print("Error saving DataArray to NetCDF. " \
                       "Path may be too long.")
-                print(f"save_path was: {str(save_path)}")
 
         self.__previous_step = 'raw'
 
@@ -288,46 +296,17 @@ class ProcessingState:
 
         return None
 
-    def remove_noise(self):
+    def run_noise_remover(self):
         self.initialize_next_step()
 
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
         for filepath in filepaths_list:         
             dataset = TRRDataset(filepath)
-
-            # Make two copies of existing data, one to 
-            data_array = dataset[self.__previous_step].copy() # type: ignore
-            data_array_original = dataset[self.__previous_step].copy() # type: ignore
-
-            # Create interactive plot
-            fig, ax = plt.subplots(figsize=(10, 5))
-            remover = pp.NoiseRemover(data_array, data_array_original, ax, fig)
-            fig.canvas.mpl_connect("button_press_event", remover.onclick)
-            remover.update_plot()
-            pp.add_noise_removal_buttons(fig, ax, remover)
-            plt.show()
-
-            final_selected_points = remover.selected_points
-
-            plt.figure(figsize=(10, 5))
-            plt.plot(data_array_original.time, data_array_original, 
-                        label="Original Data", linestyle="dotted", alpha=0.5)
-            plt.plot(data_array.time, data_array, 
-                        label="Cleaned Data", linewidth=1)
-            plt.legend()
-            plt.xlabel("Time (ps)")
-            plt.ylabel("Reflectance (arb. units)")
-            plt.title(f"{dataset.set_number} noise removal")
-            plt.savefig(fname = self.get_plot_save_path(dataset))
-            plt.clf()
-
-            # Update report
+            dataset.remove_noise(processor = self)
             self.update_report(dataset)
+            dataset.save(self.save_dir)
 
-            # Add processed data to dataset and save
-            dataset.add_array(self.__current_step, data_array)
-            dataset.save()
         return
 
     def normalize_data(self):
@@ -361,7 +340,7 @@ class ProcessingState:
 
             # Add the processed data to the dataset and save
             dataset.add_array(self.__current_step, data_array)
-            dataset.save()
+            dataset.save(self.save_dir)
         return None
     
     def subtract_decay(self):
@@ -452,7 +431,7 @@ class ProcessingState:
 
             # Add subtracted data to dataset
             dataset.add_array(self.__current_step, data_array)
-            dataset.save()
+            dataset.save(self.save_dir)
         return
 
     def da_fourier_transform(self, apply_hanning_window : bool = True, max_frequency : float = 100):
@@ -514,12 +493,12 @@ class ProcessingState:
             plt.plot(masked_array.frequency, masked_array.values)
             plt.xlabel("Frequency (GHz)")
             plt.ylabel("FFT Magnitude")
-            plt.title(f"{dataset.attrs['set number']} Fourier Transform")
+            plt.title(f"{dataset.set_number} Fourier Transform")
             plt.savefig(fname = self.get_plot_save_path(dataset))
             plt.show()
             
             self.update_report(dataset) #type: ignore
 
-            fft_dataarray.save(filename_modifier='-fft')
+            fft_dataarray.save(self.save_dir, filename_modifier='-fft')
 
         return

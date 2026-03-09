@@ -31,6 +31,7 @@ from typing import Self
 xr.set_options(keep_attrs=True)
 
 from . import fitting_functions as ff
+import processing_package as pp
 
 class TRRDataset(Dataset):
     __slots__ = (
@@ -45,16 +46,14 @@ class TRRDataset(Dataset):
 
     def __init__(self, filepath : pathlib.PurePath, input_file_type : str = 'TimeSpec'):
         
-        self.rawfilename = filepath.name
-        self.filepath = str(filepath)
-
         if filepath.suffix != '.nc':
             array = self.gen_from_file(filepath, input_file_type)
             super().__init__(data_vars={'raw': array}, attrs=array.attrs)
+            self.rawfilename = filepath.name
         else:
             # Handle .nc files
             ds = xr.open_dataset(filepath)
-            super().__init__(ds._obj)
+            super().__init__(ds.data_vars, ds.coords, ds.attrs)
             self.attrs.update(ds.attrs)
             
         self.set_number = self.__getattr__('set number')
@@ -62,11 +61,12 @@ class TRRDataset(Dataset):
         self.sample = self.__getattr__('sample')
         self.scale_factor = self.__getattr__('scale factor')
         self.rzero = self.__getattr__('rzero')
+        self.filepath = str(filepath)
         
         self.load()
         self.close()
 
-        return self
+        return None
     
     def gen_from_file(self, filepath : pathlib.PurePath, input_file_type: str = 'TimeSpec'):
 
@@ -190,14 +190,44 @@ class TRRDataset(Dataset):
         self[step_name] = array
         return
 
-    def save(self, filename_modifier : str = ''):
+    def save(self, save_dir, filename_modifier : str = ''):
         if filename_modifier:
-            save_path = self.save_dir / f'{self.set_number}{filename_modifier}.nc'
+            save_path = save_dir / f'{self.set_number}{filename_modifier}.nc'
         else:
-            save_path = self.save_dir / f'{self.set_number}.nc'
+            save_path = save_dir / f'{self.set_number}.nc'
         self.to_netcdf(path = save_path, mode = 'a')
         return
-        
+    
+    def remove_noise(self, processor):
+        data_array = self[processor.previous_step].copy()
+        data_array_original = self[processor.previous_step].copy()
+
+        # Create interactive plot
+        fig, ax = plt.subplots(figsize=(10, 5))
+        remover = pp.NoiseRemover(data_array, data_array_original, ax, fig)
+        fig.canvas.mpl_connect("button_press_event", remover.onclick)
+        remover.update_plot()
+        pp.add_noise_removal_buttons(fig, ax, remover)
+        plt.show()
+
+        final_selected_points = remover.selected_points
+
+        plt.figure(figsize=(10, 5))
+        plt.plot(data_array_original.time, data_array_original, 
+                    label="Original Data", linestyle="dotted", alpha=0.5)
+        plt.plot(data_array.time, data_array, 
+                    label="Cleaned Data", linewidth=1)
+        plt.legend()
+        plt.xlabel("Time (ps)")
+        plt.ylabel("Reflectance (arb. units)")
+        plt.title(f"{self.set_number} noise removal")
+        plt.savefig(fname = processor.get_plot_save_path(self))
+        plt.clf()
+
+        self.add_array(processor.current_step, data_array)
+
+        return
+
 
 def mask_data_array(
         data_array : xr.DataArray, 
