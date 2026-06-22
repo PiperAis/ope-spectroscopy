@@ -42,10 +42,9 @@ if __name__ == "__main__":
         
     # --- Step 2: Processing (normalize and subtract decay) --- #
     
-    # experiment.initialize_next_step()
-    # experiment.normalize_data()
-    # experiment.subtract_decay()
-
+    experiment.normalize_data()
+    experiment.subtract_decay()
+    experiment.da_fourier_transform()
 # # %%
 
 # %%

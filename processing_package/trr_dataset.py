@@ -29,8 +29,6 @@ from pathlib import Path
 import re
 from scipy.optimize import curve_fit
 import xarray as xr
-from xarray import Dataset
-from typing import Self
 
 xr.set_options(keep_attrs=True)
 
@@ -43,7 +41,7 @@ class TRRDataset:
     An extension for an XArray dataset for TRR data processing workflow.
     """
 
-    def __init__(self, xarray_obj, filepath : pathlib.PurePath | None = None):
+    def __init__(self, xarray_obj):
         
         self._obj = xarray_obj
         self._verify_attributes()
@@ -234,7 +232,7 @@ class TRRDataset:
         plt.xlabel("Time (ps)")
         plt.ylabel("Reflectance (arb. units)")
         plt.title(f"{self.set_number} noise removal")
-        plt.savefig(fname = processor.get_plot_save_path(self))
+        plt.savefig(fname = processor.get_plot_save_path(self._obj))
         plt.clf()
 
         self.add_array(processor.current_step, data_array)
