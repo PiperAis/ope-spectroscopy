@@ -1,5 +1,5 @@
 """ 
-Helper class for TRR (time resolved reflectance) data
+Helper class (xr accessor) for TRR (time resolved reflectance) data
 collected using TimeSpec software. Expects file naming conventions 
 that use hyphens to separate pieces of information: \n
 
@@ -13,7 +13,11 @@ Example file name:\n
 01-flake1a-n0p2T-180kSF-118mV-pumpwl532nm-pumppwr20uW
 
 \n\n
-V 1.0
+V 1.5
+
+
+To Do
+- Add units
 
 author: @piper
 """
@@ -33,161 +37,170 @@ xr.set_options(keep_attrs=True)
 from . import fitting_functions as ff
 import processing_package as pp
 
-class TRRDataset(Dataset):
-    __slots__ = (
-        'rawfilename',
-        'set_number', 
-        'sample',
-        'field',
-        'scale_factor',
-        'rzero',
-        'filepath'
-    ) 
+@xr.register_dataset_accessor("trrxr")
+class TRRDataset:
+    """
+    An extension for an XArray dataset for TRR data processing workflow.
+    """
 
-    def __init__(self, filepath : pathlib.PurePath, input_file_type : str = 'TimeSpec'):
+    def __init__(self, xarray_obj, filepath : pathlib.PurePath | None = None):
         
-        if filepath.suffix != '.nc':
-            array = self.gen_from_file(filepath, input_file_type)
-            super().__init__(data_vars={'raw': array}, attrs=array.attrs)
-            self.rawfilename = filepath.name
-        else:
-            # Handle .nc files
-            ds = xr.open_dataset(filepath)
-            super().__init__(ds.data_vars, ds.coords, ds.attrs)
-            self.attrs.update(ds.attrs)
-            
-        self.set_number = self.__getattr__('set number')
-        self.field = self.__getattr__('field')
-        self.sample = self.__getattr__('sample')
-        self.scale_factor = self.__getattr__('scale factor')
-        self.rzero = self.__getattr__('rzero')
-        self.filepath = str(filepath)
+        self._obj = xarray_obj
+        self._verify_attributes()
         
-        self.load()
-        self.close()
+        self._obj.load()
+        self._obj.close()
 
         return None
     
-    def gen_from_file(self, filepath : pathlib.PurePath, input_file_type: str = 'TimeSpec'):
+    @classmethod
+    def create_trr_dataset(cls, filepath : pathlib.PurePath | None = None, input_file_type : str = 'TimeSpec'):
 
-        # Set parameters for import for pandas read_csv function
-        if input_file_type == 'TimeSpec':
-            usecols = [0, 1]
-            separator = r'\s+'
-            header = None
-            time_index = 0
-            data_index = 1
-            time_factor = 10**(-3)
-        if input_file_type == 'CSV':
-            usecols = None
-            separator = ','
-            header = 'infer'
-            time_index = 'time'
-            time_factor = 1
-        filepath_string = str(self.filepath)
+        def gen_from_file(filepath : pathlib.PurePath, input_file_type: str = 'TimeSpec'):
 
-        raw_data = pd.read_csv(filepath_string, 
-                            usecols = usecols, 
-                            sep = separator, 
-                            header = header)
-        if input_file_type == 'CSV':
-            data_index = raw_data.columns.tolist()[1]
-        
-        # Get metadata from filename
-        attrs = {'field' : self.get_field() if self.get_field() is not None else 0,
-                      'sample' : self.get_sample_name(),
-                      'scale factor' : self.get_scale_factor(),
-                      'rzero' : self.get_rzero(),
-                      'datafile' : filepath.name,
-                      'set number' : filepath.name.split('-')[0]
-                      }
+            # Set parameters for import for pandas read_csv function
+            if input_file_type == 'TimeSpec':
+                usecols = [0, 1]
+                separator = r'\s+'
+                header = None
+                time_index = 0
+                data_index = 1
+                time_factor = 10**(-3)
 
-        array = xr.DataArray(data = raw_data[data_index], 
-                        coords = {'time' : raw_data[time_index]*time_factor},
-                        attrs = attrs,
-                        name = 'raw')
-        
-        return array
+            if input_file_type == 'CSV':
+                usecols = None
+                separator = ','
+                header = 'infer'
+                time_index = 'time'
+                time_factor = 1
 
-    def get_field(self) -> float | None:
-        """ 
-        Gets magnetic field from data filename, returning it as a str or 
-        None if not found. Assumes filename structure is (e.g.)
-        ***-n2p6T-*** where n represents negative sign, p represents a
-        period, and the field is separated from other information by '-'
+            filepath_string = str(filepath)
+            raw_data = pd.read_csv(filepath_string,
+                                   usecols = usecols,
+                                   sep = separator,
+                                   header = header)
+
+            if input_file_type == 'CSV':
+                data_index = raw_data.columns.tolist()[1]
+
+            array = xr.DataArray(data = raw_data[data_index],
+                            coords = {'time' : raw_data[time_index]*time_factor},
+                            attrs = {'data filename':filepath.stem},
+                            name = 'raw')
+
+            return array
+
+        if filepath == None:
+            raise TypeError("Pass a filepath to generate dataset.")
+
+        if filepath.suffix == '.nc':
+            raise ValueError("This function is for generating a dataset from a "
+            ".csv or TimeSpec file. Use XArray builtins to load an existing .nc file.")
+
+        array = gen_from_file(filepath, input_file_type)
+        dataset = xr.Dataset(data_vars = {'raw' : array},
+                            attrs = array.attrs)
+
+        return dataset
+    
+    @property
+    def set_number(self):
+        return self._obj.attrs.get('set number')
+
+    def _init_set_number(self):
+        set_string = self._obj.attrs['data filename'].split('-')[0]
+        self._obj.attrs['set number'] = set_string
+
+    @property
+    def bfield(self):
+        return self._obj.attrs.get('bfield')
+
+    def _init_bfield(self):
         """
-        # Search for the regex pattern denoting bfield
-        match = re.search(r'-n?\d+(p\d+)?T', str(self.rawfilename))
-
-        # Convert filename formatting to float
+        Gets magnetic field from data filename. Assumes filename structure is
+        (e.g.) ***-n2p6T-*** where n represents negative sign, p represents a
+        period, and the field is separated from other information by '-'.
+        """
+        match = re.search(r'-n?\d+(p\d+)?T', self._obj.attrs['data filename'])
         if match:
             bstring = match.group(0)
             bstring = bstring.replace('-', '')
             bstring = bstring.replace('p', '.')
             bstring = bstring.replace('n', '-')
             bstring = bstring.replace('T', '')
-            bfield = float(bstring)
-            return bfield
+            self._obj.attrs['bfield'] = float(bstring)
         else:
-            return None
+            self._obj.attrs['bfield'] = float(0)
 
-    def get_sample_name(self) -> str:
-        """ Gets sample name from data filename, returning 'unnamed
-        sample' if not found. 
-        """
-        # Search for the regex pattern denoting flake name
-        match = re.search(r'flake.*-', str(self.rawfilename))
+    @property
+    def sample(self):
+        return self._obj.attrs.get('sample')
 
-        # Format sample name
+    def _init_sample(self):
+        """ Gets sample name from data filename, returning 'unnamed sample' if not found. """
+        match = re.search(r'flake.*-', self._obj.attrs['data filename'])
         if match:
             sample_name = match.group(0)
             sample_name = sample_name.split('-')[0]
             sample_name = sample_name.replace('-', '')
             sample_name = sample_name.replace('flake', 'Flake ')
-            return sample_name
+            self._obj.attrs['sample'] = sample_name
         else:
-            return 'unnamed sample'
+            self._obj.attrs['sample'] = 'unnamed sample'
 
-    def get_scale_factor(self) -> int:
-        """ 
-        Gets scale factor from data filename and returns it as an int. 
-        Returns 1 if pattern is not found. 
-        """
-        # Search for regex pattern denoting scale factor
-        match = re.search(r'-\d+kSF', str(self.rawfilename))
+    @property
+    def sf(self):
+        return self._obj.attrs.get('sf')
 
-        # Format scale factor
+    def _init_sf(self):
+        """ Gets scale factor from data filename as an int. Returns 1 if pattern not found. """
+        match = re.search(r'-\d+kSF', self._obj.attrs['data filename'])
         if match:
             scale_factor = match.group(0)
             scale_factor = scale_factor.replace('-', '')
             scale_factor = scale_factor.replace('SF', '')
             scale_factor = scale_factor.replace('k', '000')
-            scale_factor = int(scale_factor)
-            return scale_factor
+            self._obj.attrs['sf'] = int(scale_factor)
         else:
-            return 1
+            self._obj.attrs['sf'] = 1
 
-    def get_rzero(self) -> float:
-        """ 
-        Gets r_0 from data filename and returns it as a float. Returns 1 if 
-        pattern is not found. 
-        """
-        # Search for regex pattern denoting r_0
-        match = re.search(r'-\d+p?(\d+)?mV', str(self.rawfilename))
+    @property
+    def rzero(self):
+        return self._obj.attrs.get('rzero')
 
-        # Format value for return
+    def _init_rzero(self):
+        """ Gets r_0 from data filename as a float. Returns 1 if pattern not found. """
+        match = re.search(r'-\d+p?(\d+)?mV', self._obj.attrs['data filename'])
         if match:
             rzero = match.group(0)
             rzero = rzero.replace('-', '')
             rzero = rzero.replace('mV', '')
             rzero = rzero.replace('p', '.')
-            rzero = float(rzero)
-            return rzero
+            self._obj.attrs['rzero'] = float(rzero)
         else:
-            return 1
+            self._obj.attrs['rzero'] = 1
+
+    def _verify_attributes(self):
+        
+        required_attributes = ['data filename', 'set number', 'sample', 'bfield', 'rzero', 'sf']
+        for item in required_attributes:
+            if item in self._obj.attrs.keys():
+                required_attributes.remove(item)
+
+        if 'data filename' in required_attributes:
+            raise NameError("Something went wrong when initially loading your dataset, the data filename did not get saved as an attr.")
+        
+        if len(required_attributes) > 0:
+            self._init_set_number()
+            self._init_bfield()
+            self._init_sample()
+            self._init_rzero()
+            self._init_sf()
+
+        return
 
     def add_array(self, step_name : str, array : xr.DataArray):
-        self[step_name] = array
+        self._obj[step_name] = array
         return
 
     def save(self, save_dir, filename_modifier : str = ''):
@@ -195,12 +208,12 @@ class TRRDataset(Dataset):
             save_path = save_dir / f'{self.set_number}{filename_modifier}.nc'
         else:
             save_path = save_dir / f'{self.set_number}.nc'
-        self.to_netcdf(path = save_path, mode = 'a')
+        self._obj.to_netcdf(path = save_path, mode = 'a')
         return
     
     def remove_noise(self, processor):
-        data_array = self[processor.previous_step].copy()
-        data_array_original = self[processor.previous_step].copy()
+        data_array = self._obj[processor.previous_step].copy()
+        data_array_original = self._obj[processor.previous_step].copy()
 
         # Create interactive plot
         fig, ax = plt.subplots(figsize=(10, 5))
@@ -272,7 +285,7 @@ def divide_out_factors(data_array : xr.DataArray) -> xr.DataArray:
     # Prefer the non-reserved key `scale_factor_value`, fall back to
     # legacy `scale_factor` for compatibility.
     scale_factor = data_array.attrs.get(
-        'scale_factor_value', data_array.attrs.get('scale_factor', 1))
+        'sf', data_array.attrs.get('scale_factor_value', data_array.attrs.get('scale_factor', 1)))
 
     data_array.values = data_array.values / (r_zero * scale_factor)
     return data_array

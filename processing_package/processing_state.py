@@ -9,16 +9,13 @@ import numpy as np
 import pathlib
 from pathlib import Path
 import re
-import sys
+from scipy.optimize import curve_fit
 import xarray as xr
 
-THIS_DIR = Path(__file__).parent
-sys.path.append(str(THIS_DIR))
-
-import processing_package as pp
 import config
-from . import exp_decay
 from .trr_dataset import TRRDataset
+from .TRR_functions import subtract_background, divide_out_factors
+from .fitting_functions import exp_decay
 
 class ProcessingState:
     def __init__(self, 
@@ -157,8 +154,8 @@ class ProcessingState:
     def get_plot_save_path(self, dataset : xr.Dataset, as_string = True)-> str | pathlib.PurePath:
         step = self.__current_step
         stepstr = step.replace(' ', '-')
-        plot_save_path = (self.plots_dir / 
-                          f"{dataset.set_number}-{stepstr}.png")
+        plot_save_path = (self.plots_dir /
+                          f"{dataset.trrxr.set_number}-{stepstr}.png")
         if as_string:
             pathstr = str(plot_save_path)
             return pathstr
@@ -240,9 +237,9 @@ class ProcessingState:
                     if not str(f).__contains__(".")] # TimeSpec files lack a file extension
         
         for filepath in filepaths_list:
-            dataset = TRRDataset(filepath)
+            dataset = TRRDataset.create_trr_dataset(filepath)
             try:
-                dataset.save(self.save_dir)
+                dataset.trrxr.save(self.save_dir)
             except Exception:
                 print("Error saving DataArray to NetCDF. " \
                       "Path may be too long.")
@@ -251,7 +248,7 @@ class ProcessingState:
 
         return None
     
-    def update_report(self, dataset : TRRDataset, 
+    def update_report(self, dataset : xr.Dataset, 
                       caption : str = '', 
                       include_plot : bool = True):
         """
@@ -268,7 +265,7 @@ class ProcessingState:
         this section.
         :type include_plot: bool
         """
-        filename = dataset.rawfilename
+        filename = dataset.attrs['data filename']
         section = self.__current_step
         
         if include_plot:
@@ -301,11 +298,11 @@ class ProcessingState:
 
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
-        for filepath in filepaths_list:         
-            dataset = TRRDataset(filepath)
-            dataset.remove_noise(processor = self)
+        for filepath in filepaths_list:
+            dataset = xr.load_dataset(filepath)
+            dataset.trrxr.remove_noise(processor = self)
             self.update_report(dataset)
-            dataset.save(self.save_dir)
+            dataset.trrxr.save(self.save_dir)
 
         return
 
@@ -319,28 +316,22 @@ class ProcessingState:
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
         for filepath in filepaths_list:
-            dataset = TRRDataset(filepath)
+            dataset = xr.load_dataset(filepath)
 
             # Load data from the previous processing step
             data_array = dataset[self.__previous_step].copy()
 
-            # Check for existing values for scale factor and r0, 
-            # and set to 1 if missing.
-            if ('scale_factor' not in data_array.attrs and 
-                'scale_factor_value' not in data_array.attrs):
-                print("Scale factor not included in file name, setting to 1.")
-                data_array.attrs['scale_factor_value'] = 1
-            if ('rzero' not in data_array.attrs and 
-                'r_zero' not in data_array.attrs):
-                print("R_0 not included in file name, setting to 1.")
-                data_array.attrs['rzero'] = 1
-            
-            data_array = pp.subtract_background(data_array, threshold = -2)
-            data_array = pp.divide_out_factors(data_array)
+            # Copy normalization metadata from dataset attrs to the data array
+            # so divide_out_factors can find them.
+            data_array.attrs['sf'] = dataset.trrxr.sf or 1
+            data_array.attrs['rzero'] = dataset.trrxr.rzero or 1
+
+            data_array = subtract_background(data_array, threshold = -2)
+            data_array = divide_out_factors(data_array)
 
             # Add the processed data to the dataset and save
-            dataset.add_array(self.__current_step, data_array)
-            dataset.save(self.save_dir)
+            dataset.trrxr.add_array(self.__current_step, data_array)
+            dataset.trrxr.save(self.save_dir)
         return None
     
     def subtract_decay(self):
@@ -348,8 +339,9 @@ class ProcessingState:
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
         for filepath in filepaths_list:
-            dataset = TRRDataset(filepath)
-
+            dataset = xr.load_dataset(filepath)
+            dataset.trrxr._verify_attributes()
+            
             data_array = dataset[self.__previous_step].copy()
             data_array = data_array.sel(
                 time=~data_array.get_index("time").duplicated())
@@ -378,7 +370,7 @@ class ProcessingState:
             initial_guess = [masked_values[0], 0.01, np.mean(masked_values)]
 
             try:
-                params, _ = pp.curve_fit(
+                params, _ = curve_fit(
                     exp_decay, masked_da.time, masked_da.values, 
                     p0=initial_guess, nan_policy='omit')
                 time_constant = params[0]
@@ -430,8 +422,8 @@ class ProcessingState:
             processed_data.attrs['time_constant'] = time_constant
 
             # Add subtracted data to dataset
-            dataset.add_array(self.__current_step, data_array)
-            dataset.save(self.save_dir)
+            dataset.trrxr.add_array(self.__current_step, processed_data)
+            dataset.trrxr.save(self.save_dir)
         return
 
     def da_fourier_transform(self, apply_hanning_window : bool = True, max_frequency : float = 100):
@@ -460,8 +452,8 @@ class ProcessingState:
         
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
 
-        for filepath in filepaths_list: 
-            dataset = TRRDataset(filepath)
+        for filepath in filepaths_list:
+            dataset = xr.load_dataset(filepath)
 
             data_array = dataset[self.__previous_step].copy()
             data_array = data_array.sel(
@@ -493,12 +485,13 @@ class ProcessingState:
             plt.plot(masked_array.frequency, masked_array.values)
             plt.xlabel("Frequency (GHz)")
             plt.ylabel("FFT Magnitude")
-            plt.title(f"{dataset.set_number} Fourier Transform")
+            plt.title(f"{dataset.trrxr.set_number} Fourier Transform")
             plt.savefig(fname = self.get_plot_save_path(dataset))
             plt.show()
-            
+
             self.update_report(dataset) #type: ignore
 
-            fft_dataarray.save(self.save_dir, filename_modifier='-fft')
+            save_path = self.save_dir / f'{dataset.trrxr.set_number}-fft.nc'
+            fft_dataarray.to_netcdf(save_path)
 
         return

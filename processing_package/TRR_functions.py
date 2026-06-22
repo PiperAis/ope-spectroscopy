@@ -228,7 +228,7 @@ def divide_out_factors(data_array : xr.DataArray) -> xr.DataArray:
     # Prefer the non-reserved key `scale_factor_value`, fall back to
     # legacy `scale_factor` for compatibility.
     scale_factor = data_array.attrs.get(
-        'scale_factor_value', data_array.attrs.get('scale_factor', 1))
+        'sf', data_array.attrs.get('scale_factor', 1))
 
     data_array.values = data_array.values / (r_zero * scale_factor)
     return data_array
