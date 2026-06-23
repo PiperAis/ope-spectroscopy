@@ -20,12 +20,10 @@ expt_date = "test"
 # ---- Import modules ---- #
 import argparse
 from pathlib import Path
-import sys
 import yaml
 
 # Add code directory to system path to import custom modules.
-THIS_DIR = Path(__file__).parent
-sys.path.append(str(THIS_DIR))
+ROOT_DIR = Path(__file__).parent.parent
 from processing_package import ProcessingState
 
 
@@ -45,13 +43,18 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Run TRR processing pipeline.")
     parser.add_argument(
-        '--config',
-        default=str(THIS_DIR / 'config.yaml'),
-        help="Path to project config.yaml (default: config.yaml next to this script)"
+        '--project',
+        default=None,
+        help="Name of a directory in the same parent folder as this script containing config.yaml"
     )
     args, _ = parser.parse_known_args()
 
-    cfg = load_config(args.config)
+    if args.project:
+        config_path = ROOT_DIR.parent / args.project / 'config.yaml'
+    else:
+        config_path = ROOT_DIR.parent / '07_CrSBr_Cryo4' / 'config.yaml'
+
+    cfg = load_config(config_path)
 
     experiment = ProcessingState(experiment_name = expt_date,
                                    steps_list=['noise corrected',

@@ -2,7 +2,7 @@
 # Paths are relative to this file's location (Code/).
 # The processing package reads these at runtime — it contains no paths of its own.
 
-data_dir: ../TRR/raw_data
-processed_data_dir: ../TRR/processed
-reports_dir: ../TRR/reports
-pl_dir: ../PL
+data_dir: ./TRR/raw_data
+processed_data_dir: ./TRR/processed
+reports_dir: ./TRR/reports
+pl_dir: ./PL

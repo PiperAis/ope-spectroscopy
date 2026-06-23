@@ -1,0 +1,16 @@
+[project]
+name = "processing-package"
+version = "0.1.0"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "xarray",
+    "matplotlib",
+    "netcdf4",
+    "pyyaml",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
