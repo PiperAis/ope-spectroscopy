@@ -7,7 +7,7 @@ Rough draft, finishing touches will come during phase 5!
 
 # Input the name of the folder containing the data to be processed.
 # Assumes data folder is inside of ..\TRR\raw_data
-
+#%%
 expt_date = "test"
 
 # ---- Import modules ---- #
@@ -49,6 +49,7 @@ if __name__ == "__main__":
 
     experiment_date = '2026-03-03'
     data_path = Path(cfg['pl_dir']) / experiment_date
-    results = steady_state.process_pl_directory_gaussian(data_path)
+    results = steady_state.process_pl_directory_lorentzian(data_path)
     for res in results:
         print(res)
+# %%

@@ -7,3 +7,4 @@ processed_data_dir: ./TRR/processed
 reports_dir: ./TRR/reports
 pl_dir: ./PL/raw_data
 processed_pl_dir: ./PL/processed
+pl_bfield_dir: ./PL/raw_data/2025-04-30/D8-bsweep

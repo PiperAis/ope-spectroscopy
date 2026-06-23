@@ -235,3 +235,130 @@ def process_pl_directory_gaussian(experiment_directory) -> list:
                 print(f"Error processing {file.name}: {e}")
 
     return results
+
+def Lorentz(p : list, x, N=None):
+    """ p = [height, center, FWHM] """
+    if N is None:
+        N = len(p) // 3
+    result = 0
+    for i in range(N):
+        area, center, FWHM = p[i*3], p[i*3+1], p[i*3+2]
+        result += area / (1 + ((x - center) / (FWHM / 2))**2)
+    return result
+
+def diffL_fixed(p0: list, x, y, N=None):
+    """
+    p0: parameter vector with fixed peak centers removed.
+    fixed_energies: dict of {peak_index: fixed_energy}, e.g. {1: 1.325}
+    Rebuilds full parameter vector before evaluating Lorentz.
+    """
+    num_peaks = len(p0) // 3
+    
+    return np.sum((y - Lorentz(p0, x, num_peaks))**2)
+
+def fit_lorentzian(data_array, inputpeaks, inputamps, inputwids,
+                   fixed_energies: dict = {}, fixed_widths: dict = {}) -> dict:  # e.g. fixed_energies={1: 1.325}
+    x = data_array.energy.values
+    y = data_array.values
+    num_peaks = len(inputpeaks)
+
+    p0, bounds = generateParams_fixed(inputpeaks, inputamps, inputwids,
+                                      fixed_energies=fixed_energies, fixed_widths = fixed_widths)
+
+    try:
+        fit_free = minimize(diffL_fixed, p0,
+                            args=(x, y, fixed_energies),
+                            bounds=bounds).get('x')
+
+        # Rest of your plotting/extraction code stays identical, using p_full
+        peak_energies = [float(round(fit_free[3*j + 1], 4)) for j in range(num_peaks)]
+        peak_amplitudes = [float(round(fit_free[3*j], 4)) for j in range(num_peaks)]
+        fit_success = True
+
+        # Plot
+        plt.figure(figsize=(10, 6))
+        plt.plot(x, y, label='Data', color='black')
+        plt.plot(x, Lorentz(fit_free, x), label='Fit', color='red')
+        # Individual peaks
+        for j in range(num_peaks):
+            amp_j = fit_free[3*j]
+            cen_j = fit_free[3*j + 1]
+            wid_j = fit_free[3*j + 2]
+            lor_j = ff.Lorentz([amp_j, cen_j, wid_j], x)
+            plt.plot(x, lor_j, label=f'Peak {j+1}: {cen_j:.3f} eV', linestyle='--')
+        plt.legend()
+        plt.title(f"{data_array.attrs['sample']} {data_array.attrs['spot']} ({num_peaks} peaks)")
+        plt.xlabel('Energy (eV)')
+        plt.ylabel('Intensity (arb. units)')
+        plt.show()
+
+    except Exception as e:
+        print(f"Fit failed for {data_array.attrs['filename']}: {e}")
+        peak_energies = None
+        num_peaks = 0
+        fit_success = False
+        params = None
+
+    return {
+        'peak_energies': peak_energies,
+        'peak_amplitudes' : peak_amplitudes,
+        'num_peaks': num_peaks,
+        'fit_success': fit_success,
+    }
+
+def plot_multiple_together(directory: Path) -> None:
+    """
+    Plots all PL spectra in a directory on a single figure.
+    Applies an energy mask (1.26–1.38 eV) and Savitzky-Golay smoothing.
+    """
+    labellist = ['$MoS_2$ HS', '$WSe_2$ HS', 'Bare CrSBr']
+    plt.figure(figsize=(6, 6), dpi=400)
+    i = 0
+    for file in directory.iterdir():
+        if file.is_file():
+            data_array = load_pl_data(file)
+            maskcondition = (data_array.energy > 1.26) & (data_array.energy < 1.38)
+            da_masked = data_array.where(maskcondition, drop=True)
+            x = da_masked.energy.values
+            y = da_masked.values
+            y = smooth(y, 15, 3)
+            plt.plot(x, y, label=f'{labellist[i]}')
+            i += 1
+    plt.legend()
+    plt.xlabel('Energy (eV)', fontsize='large')
+    plt.ylabel('PL Intensity (arb. units)', fontsize='x-large')
+    plt.show()
+
+
+def process_pl_directory_lorentzian(experiment_directory) -> list:
+    """
+    Processes all CSV files in the PL directory for the given experiment date.
+    Returns list of results dicts.
+    """
+    results = []
+
+    for file in experiment_directory.iterdir():
+        if file.is_file():
+            try:
+                data_array = load_pl_data(file)
+                fit_result = fit_lorentzian(data_array,
+                             inputpeaks=[1.351, 1.327],
+                             inputamps=[1000, 200],
+                             inputwids=[0.025, 0.05],
+                             fixed_energies={},
+                             fixed_widths = {0 : 0.0125})
+                result = {
+                    'filename': file.name,
+                    'sample': data_array.attrs['sample'],
+                    'spot': data_array.attrs['spot'],
+                    'peak1_energy': fit_result['peak_energies'][0] if fit_result['peak_energies'] else None,
+                    'peak1_amplitude': fit_result['peak_amplitudes'][0] if fit_result['peak_amplitudes'] else None,
+                    'peak2_energy': fit_result['peak_energies'][1] if fit_result['peak_energies'] else None,
+                    'peak2_amplitude': fit_result['peak_amplitudes'][1] if fit_result['peak_amplitudes'] else None,
+                    'fit_success': fit_result['fit_success']
+                }
+                results.append(result)
+            except Exception as e:
+                print(f"Error processing {file.name}: {e}")
+
+    return results
