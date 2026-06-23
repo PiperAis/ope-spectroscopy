@@ -12,31 +12,35 @@ import re
 from scipy.optimize import curve_fit
 import xarray as xr
 
-import config
 from .trr_dataset import TRRDataset
 from .TRR_functions import subtract_background, divide_out_factors
 from .fitting_functions import exp_decay
 
 class ProcessingState:
-    def __init__(self, 
+    def __init__(self,
                  experiment_name : str,
-                 steps_list: list[str]):
+                 steps_list: list[str],
+                 project_config: dict):
         """
-        :param experiment_name: name of folder that contains raw data 
+        :param experiment_name: name of folder that contains raw data
         (usually a date)
         :type experiment_name: str
         :param steps_list: a list of the processing steps to be
-        executed, these are used as headers for the data report when 
+        executed, these are used as headers for the data report when
         generated and help create file structure and name plots.
         :type steps_list: list[str]
+        :param project_config: dict of resolved paths and settings,
+        typically loaded from a project-level config.yaml. Required
+        keys: data_dir, processed_data_dir, reports_dir.
+        :type project_config: dict
 
-        This class holds directory paths for loading and saving data 
-        and plots, as well as tracking the current data-processing 
+        This class holds directory paths for loading and saving data
+        and plots, as well as tracking the current data-processing
         step to make plot labeling and report generation smoother.
         """
-        
+
         self.steps_list = steps_list
-        
+
         self.experiment_name = experiment_name
         if len(self.experiment_name) == 0:
             raise ValueError("Experiment name parameter is required to " \
@@ -45,10 +49,10 @@ class ProcessingState:
         self.__step_number = 0
         self.__current_step = self.__steps_list[0]
         self.__previous_step = None
-        self.raw_data_dir = config.DATA_DIR / experiment_name
-        self.save_dir = config.PROCESSED_DATA_DIR / experiment_name
+        self.raw_data_dir = Path(project_config['data_dir']) / experiment_name
+        self.save_dir = Path(project_config['processed_data_dir']) / experiment_name
         self.load_dir = self.save_dir
-        self.reports_dir = config.REPORTS_DIR / experiment_name
+        self.reports_dir = Path(project_config['reports_dir']) / experiment_name
         self.plots_dir = self.reports_dir
         self.babyfresh = True
 

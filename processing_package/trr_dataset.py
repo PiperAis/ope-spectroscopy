@@ -206,7 +206,7 @@ class TRRDataset:
             save_path = save_dir / f'{self.set_number}{filename_modifier}.nc'
         else:
             save_path = save_dir / f'{self.set_number}.nc'
-        self._obj.to_netcdf(path = save_path, mode = 'a')
+        self._obj.to_netcdf(path = save_path, mode = 'w')
         return
     
     def remove_noise(self, processor):
