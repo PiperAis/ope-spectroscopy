@@ -72,7 +72,8 @@ from scipy.optimize import minimize
 ROOT_DIR = Path(__file__).parent.parent
 
 from processing_package import (
-    read_spectrum, get_b_fields, get_heatmap_data, plot_heatmap,
+    # read_spectrum, get_b_fields, get_heatmap_data, plot_heatmap,
+    bfield_contour_plot,
     diffL, Lorentz, diffquad, quadratic,
 )
 
@@ -105,77 +106,81 @@ if __name__ == "__main__":
         config_path = ROOT_DIR.parent / '07_CrSBr_Cryo4' / 'config.yaml'
 
     cfg = load_config(config_path)
-    directory = cfg['pl_bfield_dir']
 
-    file_paths = glob.glob(os.path.join(directory, '*.csv'))
-    bfields, bfield_list = get_b_fields(file_paths)
+    # experiment_date = '2026-03-03'
+    data_path = Path(cfg['pl_bfield_dir'])
 
-    yvar_all = []
-    intensity_all = []
-    maxes = []
-    peak_locs = {}
-    peak_amps = {}
+    bfield_contour_plot(data_path)
 
-    for i, (bfield, file_path) in enumerate(bfield_list):
-        energy, intensity, max_intensity = read_spectrum(
-            file_path, normalize=normalize, xEnergy=True, umBlaze=False
-        )
-        maxes.append(max_intensity)
+    # file_paths = glob.glob(os.path.join(directory, '*.csv'))
+    # bfields, bfield_list = get_b_fields(file_paths)
 
-        yvar, zvar = get_heatmap_data(
-            energy, intensity,
-            plot_with_mask=plot_with_mask,
-            min_energy=min_energy,
-            max_energy=max_energy,
-            apply_smooth=apply_smooth,
-        )
-        yvar_all.append(yvar)
-        intensity_all.append(zvar)
+    # yvar_all = []
+    # intensity_all = []
+    # maxes = []
+    # peak_locs = {}
+    # peak_amps = {}
 
-        if do_fit:
-            fit = minimize(diffL, p0, args=(yvar, zvar), bounds=bounds).get('x')
-            n_peaks = len(p0) // 3
-            peak_locs[str(bfield)] = [fit[3*j + 1] for j in range(n_peaks)]
-            peak_amps[str(bfield)] = [fit[3*j]     for j in range(n_peaks)]
+    # for i, (bfield, file_path) in enumerate(bfield_list):
+    #     energy, intensity, max_intensity = read_spectrum(
+    #         file_path, normalize=normalize, xEnergy=True, umBlaze=False
+    #     )
+    #     maxes.append(max_intensity)
 
-            if plot_traces:
-                plt.figure(dpi=400)
-                plt.title(f"{bfield} T")
-                plt.plot(yvar, zvar)
-                plt.plot(yvar, Lorentz(fit, yvar))
-                plt.show()
-        elif plot_traces:
-            plt.figure(dpi=400)
-            plt.title(f"{bfield} T")
-            plt.plot(yvar, zvar)
-            plt.show()
+    #     yvar, zvar = get_heatmap_data(
+    #         energy, intensity,
+    #         plot_with_mask=plot_with_mask,
+    #         min_energy=min_energy,
+    #         max_energy=max_energy,
+    #         apply_smooth=apply_smooth,
+    #     )
+    #     yvar_all.append(yvar)
+    #     intensity_all.append(zvar)
 
-    if normalize_all:
-        global_max = max(maxes)
-        intensity_all = [z / global_max for z in intensity_all]
+    #     if do_fit:
+    #         fit = minimize(diffL, p0, args=(yvar, zvar), bounds=bounds).get('x')
+    #         n_peaks = len(p0) // 3
+    #         peak_locs[str(bfield)] = [fit[3*j + 1] for j in range(n_peaks)]
+    #         peak_amps[str(bfield)] = [fit[3*j]     for j in range(n_peaks)]
 
-    plot_heatmap(bfields, yvar_all, intensity_all, plot_title, cmap=cmap)
+    #         if plot_traces:
+    #             plt.figure(dpi=400)
+    #             plt.title(f"{bfield} T")
+    #             plt.plot(yvar, zvar)
+    #             plt.plot(yvar, Lorentz(fit, yvar))
+    #             plt.show()
+    #     elif plot_traces:
+    #         plt.figure(dpi=400)
+    #         plt.title(f"{bfield} T")
+    #         plt.plot(yvar, zvar)
+    #         plt.show()
 
-    # ---- Peak positions vs. B-field (only when do_fit is True) ---- #
-    if do_fit and peak_locs:
-        n_peaks = len(p0) // 3
-        by_peak = [[] for _ in range(n_peaks)]
-        for bfield in bfields:
-            locs = peak_locs[str(bfield)]
-            for j in range(n_peaks):
-                by_peak[j].append(locs[j])
+    # if normalize_all:
+    #     global_max = max(maxes)
+    #     intensity_all = [z / global_max for z in intensity_all]
 
-        pquad_init = [-3, 0, 1.4]
-        for i in range(n_peaks):
-            quad_fit = minimize(
-                diffquad, pquad_init, args=(bfields, by_peak[i])
-            ).get('x')
-            a = round(quad_fit[0], 5)
-            b = round(quad_fit[1], 5)
-            c = round(quad_fit[2], 2)
-            label = f"$y_{i+1}$ = {a}$x^2$ + {b}$x$ + {c}"
-            plt.figure(dpi=400)
-            plt.plot(bfields, by_peak[i], "r.")
-            plt.title(f"Peak #{i+1}, {label}")
-            plt.plot(bfields, quadratic(quad_fit, bfields))
-            plt.show()
+    # plot_heatmap(bfields, yvar_all, intensity_all, plot_title, cmap=cmap)
+
+    # # ---- Peak positions vs. B-field (only when do_fit is True) ---- #
+    # if do_fit and peak_locs:
+    #     n_peaks = len(p0) // 3
+    #     by_peak = [[] for _ in range(n_peaks)]
+    #     for bfield in bfields:
+    #         locs = peak_locs[str(bfield)]
+    #         for j in range(n_peaks):
+    #             by_peak[j].append(locs[j])
+
+    #     pquad_init = [-3, 0, 1.4]
+    #     for i in range(n_peaks):
+    #         quad_fit = minimize(
+    #             diffquad, pquad_init, args=(bfields, by_peak[i])
+    #         ).get('x')
+    #         a = round(quad_fit[0], 5)
+    #         b = round(quad_fit[1], 5)
+    #         c = round(quad_fit[2], 2)
+    #         label = f"$y_{i+1}$ = {a}$x^2$ + {b}$x$ + {c}"
+    #         plt.figure(dpi=400)
+    #         plt.plot(bfields, by_peak[i], "r.")
+    #         plt.title(f"Peak #{i+1}, {label}")
+    #         plt.plot(bfields, quadratic(quad_fit, bfields))
+    #         plt.show()
