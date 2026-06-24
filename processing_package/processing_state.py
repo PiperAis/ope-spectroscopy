@@ -55,6 +55,7 @@ class ProcessingState:
         self.reports_dir = Path(project_config['reports_dir']) / experiment_name
         self.plots_dir = self.reports_dir
         self.babyfresh = True
+        self.vault_dir = Path(project_config['vault_dir'])
 
         self.check_directory_existence()
         self.prepare_files()
@@ -271,6 +272,7 @@ class ProcessingState:
         """
         filename = dataset.attrs['data filename']
         section = self.__current_step
+        replacement=''
         
         if include_plot:
             plot_path = self.get_plot_save_path(dataset, as_string=False)
