@@ -49,7 +49,7 @@ if __name__ == "__main__":
 
     experiment_date = '2026-03-03'
     data_path = Path(cfg['pl_dir']) / experiment_date
-    results = steady_state.process_pl_directory_lorentzian(data_path)
+    results = steady_state.process_pl_directory_gaussian(data_path)
     for res in results:
         print(res)
 # %%

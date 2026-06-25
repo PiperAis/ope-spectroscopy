@@ -12,9 +12,9 @@ import re
 from scipy.optimize import curve_fit
 import xarray as xr
 
-from .trr_dataset import TRRDataset
-from .TRR_functions import subtract_background, divide_out_factors
+from .trr_dataset import TRRDataset, subtract_background, divide_out_factors
 from .fitting_functions import exp_decay
+from . import utilities
 
 class ProcessingState:
     def __init__(self,
@@ -166,29 +166,6 @@ class ProcessingState:
             return pathstr
         else:
             return plot_save_path
-
-    def get_file_names(self, 
-                       dir : pathlib.PurePath, 
-                       condition : str = ''
-                       ) -> list[str]:
-        """
-        Returns a list of the file names in dir in alphabetical order.
-
-        :param dir: Directory containing files to be listed
-        :type dir: pathlib.PurePath
-        :param condition: Conditional for filtering file types.
-        [f for f in dir.iterdir() if condition]
-        :type condition: str
-        """
-        if condition:
-            filepaths = [f for f in dir.iterdir() if condition] #type: ignore
-        else:
-            filepaths = [f for f in dir.iterdir()] #type: ignore
-
-        filenames = [f.name for f in filepaths]
-        filenames.sort()
-
-        return filenames
     
     def generate_report_skeleton(self, 
                                  diagnostic_mode : bool = False
@@ -207,7 +184,7 @@ class ProcessingState:
         report_file_name = f'{self.experiment_name}-report.md'
         self.report_file = self.reports_dir / report_file_name
 
-        file_names_list = self.get_file_names(
+        file_names_list = utilities.get_file_names(
                                             dir = self.raw_data_dir, 
                                             condition = "not f.__contains__('.'')")
 

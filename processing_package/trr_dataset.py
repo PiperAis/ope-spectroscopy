@@ -15,7 +15,6 @@ Example file name:\n
 \n\n
 V 1.5
 
-
 To Do
 - Add units
 
@@ -26,9 +25,9 @@ import numpy as np
 import pandas as pd
 import pathlib
 from pathlib import Path
-import re
 from scipy.optimize import curve_fit
 import xarray as xr
+from . import utilities
 
 xr.set_options(keep_attrs=True)
 
@@ -114,19 +113,9 @@ class TRRDataset:
         return self._obj.attrs.get('bfield')
 
     def _init_bfield(self):
-        """
-        Gets magnetic field from data filename. Assumes filename structure is
-        (e.g.) ***-n2p6T-*** where n represents negative sign, p represents a
-        period, and the field is separated from other information by '-'.
-        """
-        match = re.search(r'-n?\d+(p\d+)?T', self._obj.attrs['data filename'])
-        if match:
-            bstring = match.group(0)
-            bstring = bstring.replace('-', '')
-            bstring = bstring.replace('p', '.')
-            bstring = bstring.replace('n', '-')
-            bstring = bstring.replace('T', '')
-            self._obj.attrs['bfield'] = float(bstring)
+        bfield = utilities.get_field(self._obj.attrs['data filename'])
+        if bfield:
+            self._obj.attrs['bfield'] = bfield
         else:
             self._obj.attrs['bfield'] = float(0)
 
@@ -136,12 +125,8 @@ class TRRDataset:
 
     def _init_sample(self):
         """ Gets sample name from data filename, returning 'unnamed sample' if not found. """
-        match = re.search(r'flake.*-', self._obj.attrs['data filename'])
-        if match:
-            sample_name = match.group(0)
-            sample_name = sample_name.split('-')[0]
-            sample_name = sample_name.replace('-', '')
-            sample_name = sample_name.replace('flake', 'Flake ')
+        sample_name = utilities.get_sample_name(self._obj.attrs['data filename'])
+        if sample_name:
             self._obj.attrs['sample'] = sample_name
         else:
             self._obj.attrs['sample'] = 'unnamed sample'
@@ -151,32 +136,14 @@ class TRRDataset:
         return self._obj.attrs.get('sf')
 
     def _init_sf(self):
-        """ Gets scale factor from data filename as an int. Returns 1 if pattern not found. """
-        match = re.search(r'-\d+kSF', self._obj.attrs['data filename'])
-        if match:
-            scale_factor = match.group(0)
-            scale_factor = scale_factor.replace('-', '')
-            scale_factor = scale_factor.replace('SF', '')
-            scale_factor = scale_factor.replace('k', '000')
-            self._obj.attrs['sf'] = int(scale_factor)
-        else:
-            self._obj.attrs['sf'] = 1
+        self._obj.attrs['sf'] = utilities.get_scale_factor(self._obj.attrs['data filename'])
 
     @property
     def rzero(self):
         return self._obj.attrs.get('rzero')
 
     def _init_rzero(self):
-        """ Gets r_0 from data filename as a float. Returns 1 if pattern not found. """
-        match = re.search(r'-\d+p?(\d+)?mV', self._obj.attrs['data filename'])
-        if match:
-            rzero = match.group(0)
-            rzero = rzero.replace('-', '')
-            rzero = rzero.replace('mV', '')
-            rzero = rzero.replace('p', '.')
-            self._obj.attrs['rzero'] = float(rzero)
-        else:
-            self._obj.attrs['rzero'] = 1
+        self._obj.attrs['rzero'] = utilities.get_rzero(self._obj.attrs['data filename'])
 
     def _verify_attributes(self):
         
@@ -239,20 +206,6 @@ class TRRDataset:
 
         return
 
-
-def mask_data_array(
-        data_array : xr.DataArray, 
-        min_time : int | float, 
-        max_time : int | float
-        ) -> xr.DataArray:
-    """ 
-    Returns a DataArray with datapoints outside of the given time
-    limits replaced with NaN. 
-    """
-    condition = (data_array >= min_time) and (data_array <= max_time)
-    new_array = data_array.where(condition).all()
-    
-    return xr.DataArray(new_array)
 
 # --- Functions for processing TRR data --- #
 
