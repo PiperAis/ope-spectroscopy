@@ -19,7 +19,7 @@ import yaml
 # Add code directory to system path to import custom modules.
 ROOT_DIR = Path(__file__).parent.parent
 from processing_package import ProcessingState
-from processing_package.TRR_functions import get_field, get_sample_name, get_scale_factor, get_rzero
+from processing_package.utilities import get_field, get_sample_name
 
 
 def load_config(config_path):
