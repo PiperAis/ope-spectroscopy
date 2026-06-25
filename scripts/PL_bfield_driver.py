@@ -3,7 +3,9 @@ Driver script for PL vs. B-field processing.
 
 Generates a contour (heatmap) plot of PL intensity as a function of
 energy and magnetic field. Optionally fits each spectrum with Lorentzians
-and plots peak positions vs. field.
+and plots peak positions vs. field, however this functionality is out of
+date and needs to be updated to work with the current version of the
+package.
 
 Data directory is read from config.yaml (pl_bfield_dir key).
 Pass --project <folder name> to use a different project's config;

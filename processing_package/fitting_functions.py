@@ -1,15 +1,12 @@
 """
-V 2.0
-
 Helper functions for fitting data with various mathematical functions.
 
 Also includes functions to help identify peaks in spectra using
 the second derivative test. Those functions work okay but could use
-improvement.
+improvement, or may be replaceable by an existing third-party package.
 
-Created March 18, 2025
-Updated September 9, 2025
-Updated June 24, 2026
+There might be some useful ways to bring native xr operations in here, 
+since I intend to use xr objects for all data analysis.
 
 author: @piper
 """
@@ -77,7 +74,32 @@ def diffL(p : list, x, y, N=None):
 def diffquad(p, x, y):
     return np.sum((y-quadratic(p,x))**2)
 
-#----Generating parameters----#
+#----Generating and accessing fit parameters----#
+
+def generateParams(inputpeaks : list, 
+                   inputamps : list, 
+                   boundsize : float = 0.003, 
+                   wid : float = 0.001, 
+                   widbound : list[float] = [0.001, 0.015]):
+    """
+    For fitting spectra.
+    Generates a list of initial fitting parameters for gaussian or
+    Lorentzian curves for each energy given in inputpeaks. 
+    """
+    p0 = []
+    for i in range(len(inputpeaks)):
+        p0.append(inputamps[i])
+        p0.append(inputpeaks[i])
+        p0.append(wid)
+
+    bounds = []
+    for i in range(len(inputpeaks)):
+        bounds.append([0, None])
+        bounds.append([inputpeaks[i]-boundsize, inputpeaks[i]+boundsize])
+        bounds.append(widbound)
+    
+    return p0, bounds
+
 
 def generateParams_fixed(inputpeaks, inputamps, inputwids,
                          fixed_energies: dict = {},
@@ -85,6 +107,7 @@ def generateParams_fixed(inputpeaks, inputamps, inputwids,
                          boundsize=0.008,
                          widbound=[0.001, 0.05]):
     """
+    Generates parameter arrays to use for fit_gaussian and fit_lorentzian.
     fixed_energies: dict of {peak_index: fixed_energy}
     fixed_widths: dict of {peak_index: fixed_width}
     Fixes parameters via tight bounds rather than removing from parameter vector.
@@ -107,6 +130,17 @@ def generateParams_fixed(inputpeaks, inputamps, inputwids,
             bounds.append([fixed_widths[i], fixed_widths[i]])
 
     return p0, bounds
+
+
+def getFitParams(fit):
+    fitpeaks = []
+    fitamps = []
+    fitwids = []
+    for j in range(len(fit)//3):
+        fitwids.append(fit[3*j+2])
+        fitpeaks.append(round(fit[3*j+1], 4))
+        fitamps.append(fit[3*j])
+    return fitpeaks, fitamps, fitwids
 
 
 #----Fitting----#
@@ -320,65 +354,33 @@ def findPeaks(energies, intensity, smoothingWindow = 4, span = 5, title = ''):
     
     return peakEnergies
 
-def generateParams(inputpeaks : list, 
-                   inputamps : list, 
-                   boundsize : float = 0.003, 
-                   wid : float = 0.001, 
-                   widbound : list[float] = [0.001, 0.015]):
-    """
-    For fitting spectra.
-    Generates a list of initial fitting parameters for gaussian or
-    Lorentzian curves for each energy given in inputpeaks. 
-    """
-    p0 = []
-    for i in range(len(inputpeaks)):
-        p0.append(inputamps[i])
-        p0.append(inputpeaks[i])
-        p0.append(wid)
-
-    bounds = []
-    for i in range(len(inputpeaks)):
-        bounds.append([0, None])
-        bounds.append([inputpeaks[i]-boundsize, inputpeaks[i]+boundsize])
-        bounds.append(widbound)
-    
-    return p0, bounds
-
-def getFitParams(fit):
-    fitpeaks = []
-    fitamps = []
-    fitwids = []
-    for j in range(len(fit)//3):
-        fitwids.append(fit[3*j+2])
-        fitpeaks.append(round(fit[3*j+1], 4))
-        fitamps.append(fit[3*j])
-    return fitpeaks, fitamps, fitwids
-
 # --- The below functions were written for looking at PL vs temperature data in summer 2024
+# Probably not needed anymore but holding onto them a bit longer until we've implemented
+# alternatives.
 
-def print_peaks(temperature, fitpeaks):
-    print(temperature)
-    for peak in fitpeaks:
-        print(peak)
+# def print_peaks(temperature, fitpeaks):
+#     print(temperature)
+#     for peak in fitpeaks:
+#         print(peak)
 
-def print_amps(temperature, fitamps):
-    print(temperature)
-    for amp in fitamps:
-        print(round(amp, 3))
+# def print_amps(temperature, fitamps):
+#     print(temperature)
+#     for amp in fitamps:
+#         print(round(amp, 3))
         
-def print_wids(temperature, fitwids):
-    print(temperature)
-    for wid in fitwids:
-        print(round(wid, 4))
+# def print_wids(temperature, fitwids):
+#     print(temperature)
+#     for wid in fitwids:
+#         print(round(wid, 4))
 
-def get_spacing(number_list):
-    spacings = []
-    for i in range(len(number_list)):
-        if i+1 < len(number_list):
-            spacing = round(number_list[i+1]-number_list[i], 4)
-            spacings.append(spacing)
-            print(spacing)
-    return spacings
+# def get_spacing(number_list):
+#     spacings = []
+#     for i in range(len(number_list)):
+#         if i+1 < len(number_list):
+#             spacing = round(number_list[i+1]-number_list[i], 4)
+#             spacings.append(spacing)
+#             print(spacing)
+#     return spacings
 
 
 

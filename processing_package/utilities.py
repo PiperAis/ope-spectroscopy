@@ -1,11 +1,37 @@
 """
-Shared utility functions such as filename parsing.
+Shared helpers used across data types (TRR and steady-state).
+
+Filename parsing and small general utilities. Keep this data-type-agnostic —
+anything specific to one measurement type belongs in that type's module, not
+here. Filename format: ##-flake[sample]-[temp]K-[bfield]T-[scale]SF-[R0]mV-[tokens].
 """
 
 import re
 import pathlib
 from pathlib import Path
 import xarray as xr
+
+#----File management----#
+
+def get_file_paths(
+                    dir : Path, 
+                    condition : str = ''
+                    ) -> list[Path]:
+    """
+    Returns a list of the file names in dir in alphabetical order.
+
+    :param dir: Directory containing files to be listed
+    :type dir: pathlib.PurePath
+    :param condition: Conditional for filtering file types.
+    [f for f in dir.iterdir() if condition]
+    :type condition: str
+    """
+    if condition:
+        filepaths = [f for f in dir.iterdir() if condition] #type: ignore
+    else:
+        filepaths = [f for f in dir.iterdir()] #type: ignore
+
+    return filepaths
 
 #----Parsing Filenames----#
 

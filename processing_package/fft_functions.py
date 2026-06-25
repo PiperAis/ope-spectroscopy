@@ -1,5 +1,5 @@
 """
-
+Helper functions for fast fourier transforms of TRR data.
 """
 
 import numpy as np

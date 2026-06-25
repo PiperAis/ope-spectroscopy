@@ -1,7 +1,5 @@
 """
-Executable script for steady-state processing.
-
-Rough draft, finishing touches will come during phase 5!
+Executable script for PL fitting.
 """
 # ---- User Input ---- #
 

@@ -3,6 +3,9 @@ Helper class (xr accessor) for TRR (time resolved reflectance) data
 collected using TimeSpec software. Expects file naming conventions 
 that use hyphens to separate pieces of information: \n
 
+Also contains module-level functions for TRR processing that are
+called by the accessor.
+
 [Dataset number]-flake[sample name]-[bfield]T-[scale factor]SF-[R0]mV \n
 Separate any further metadata with hyphens and include units after the 
 value. Optionally, include an identifier before the value - planning to
@@ -13,7 +16,6 @@ Example file name:\n
 01-flake1a-n0p2T-180kSF-118mV-pumpwl532nm-pumppwr20uW
 
 \n\n
-V 1.5
 
 To Do
 - Add units

@@ -1,5 +1,7 @@
 '''
 Runs TRR, creates a report, then copies the folder (report and images) to Obsidian vault.
+
+Generates an Obsidian note for each dataset and fills in parameters.
 '''
 #%%
 # ---- User Input ---- #

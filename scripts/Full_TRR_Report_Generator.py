@@ -1,13 +1,7 @@
 '''
 Runs all of the TRR processing scripts and generates a report.
 
-Noise removal step does not work if run in an interactive window
-in the environment.
-
-V1.0 created 9/04/2025 by Piper Aislinn,
-Currently being updated.
-
-Version 2.0
+Noise removal step does not work if run in an interactive environment.
 '''
 #%%
 # ---- User Input ---- #

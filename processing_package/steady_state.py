@@ -1,13 +1,15 @@
 """
 Holds helper functions for steady-state processing.
 
-Rough draft, finishing touches will come during phase 5!
+Currently only handles PL experiments, needs to be expanded to
+reflectance as well.
 """
 
 import pandas as pd
 import xarray as xr
 from pathlib import Path
 import matplotlib.pyplot as plt
+import scipy.constants as const
 from scipy.signal import savgol_filter as smooth
 from . import fitting_functions as ff
 from . import utilities
@@ -37,6 +39,31 @@ def load_pl_data(filepath: Path) -> xr.DataArray:
         name='intensity'
     )
     return array
+
+
+def bfield_contour_plot(data_directory : Path):
+    
+    bfield_file_list = utilities.get_file_paths(data_directory)
+    spectra = []
+    for filepath in sorted(bfield_file_list):
+        df = pd.read_csv(filepath)                    # one spectrum
+        field = utilities.get_field(filepath)          # reuse the existing helper
+        da = xr.DataArray(
+            df['Intensity'].values,
+            coords={"wavelength": df['Wavelength'].values,
+                    },
+            dims=["wavelength"],
+        )
+        energy_values = const.h * const.c / (da['wavelength'].values * 1e-9) / const.e
+        da = da.expand_dims(field=[field])              # tag this spectrum with its field
+        da = da.assign_coords(
+            energy=("wavelength", energy_values)
+            )
+        spectra.append(da)
+
+    bfield_map = xr.concat(spectra, dim="field")       # stack into 2D
+    bfield_map.plot.contourf(x="Magnetic Field (T)", y="Energy (eV)")    # contour map, axes auto-labeled
+    plt.show()
 
 def process_pl_directory_gaussian(experiment_directory) -> list:
     """

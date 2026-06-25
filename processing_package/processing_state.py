@@ -1,7 +1,16 @@
 """
-Docstring for processing_state.py
+ProcessingState: linear-pipeline orchestrator for TRR data.
 
-To do: implement built-in xarray fitting for the subtraction step
+Tracks processing steps, manages file flow between them, and builds the
+per-step audit report. Steps run in sequence (noise removal → normalize →
+subtract decay → FFT), each emitting a plot into the report.
+
+DO NOT generalize this to steady-state. Steady-state analysis is interactive
+fitting + cross-dataset comparison — a different shape that does not fit this
+pipeline frame. Share helpers, not this orchestrator. (See CLAUDE.md.)
+
+Paths come from the project config passed to __init__; this class hardcodes
+no locations.
 """
 
 import matplotlib.pyplot as plt
