@@ -1,15 +1,38 @@
 """
 Shared helpers used across data types (TRR and steady-state).
 
-Filename parsing and small general utilities. Keep this data-type-agnostic —
-anything specific to one measurement type belongs in that type's module, not
-here. Filename format: ##-flake[sample]-[temp]K-[bfield]T-[scale]SF-[R0]mV-[tokens].
+- load_config: read a project config.yaml and resolve all relative paths
+- Filename parsers: get_field, get_temperature, get_sample_name, get_spot,
+  get_scale_factor, get_rzero
+- File helpers: get_file_paths, get_file_names
+
+Keep this data-type-agnostic — anything specific to one measurement type
+belongs in that type's module. Filename format:
+##-flake[sample]-[temp]K-[bfield]T-[scale]SF-[R0]mV-[tokens].
 """
 
 import re
 import pathlib
 from pathlib import Path
+import yaml
 import xarray as xr
+
+_PATH_KEYS = (
+    'data_dir', 'processed_data_dir', 'reports_dir',
+    'pl_dir', 'processed_pl_dir', 'pl_bfield_dir', 'vault_dir',
+)
+
+
+def load_config(config_path: Path) -> dict:
+    """Load config.yaml and resolve all relative paths to absolute paths."""
+    config_path = Path(config_path).resolve()
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    base = config_path.parent
+    for key in _PATH_KEYS:
+        if key in cfg:
+            cfg[key] = (base / cfg[key]).resolve()
+    return cfg
 
 #----File management----#
 
@@ -123,6 +146,16 @@ def get_spot(filename: str) -> str:
         spot = spot.replace('-', '').replace('spot', 'Spot ')
         return spot
     return 'unknown spot'
+
+def get_temperature(filename: str | pathlib.PurePath) -> float | None:
+    """
+    Gets temperature in Kelvin from filename (e.g. '1p6K' → 1.6, '10K' → 10.0).
+    Returns None if not found.
+    """
+    match = re.search(r'-(\d+(p\d+)?)K\b', str(filename))
+    if match:
+        return float(match.group(1).replace('p', '.'))
+    return None
 
 def get_file_names(dir : Path, 
                     condition : str = ''

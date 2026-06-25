@@ -114,13 +114,15 @@ python /path/to/scripts/PL_bfield_driver.py --config config.yaml
 
 Generates a heatmap of PL intensity vs. energy and magnetic field from the folder specified by `pl_bfield_dir` in config.
 
-### Steady-state PL
+### Steady-state PL — interactive fitter
 
 ```bash
-python /path/to/scripts/steady_state_basics.py --config config.yaml
+python /path/to/scripts/steady_state_basics.py --project MyExperiment
 ```
 
-Loads and plots steady-state PL spectra. Fitting workflow is under active development.
+Opens a file browser in the project's `pl_dir` — navigate to a date subfolder and select one or more CSV files. An interactive matplotlib window opens: left-click to place peak markers, right-click to remove them, zoom to set the fit range, then choose **Fit Gaussian** or **Fit Lorentzian**. **Save** writes a row per peak to `processed_pl_dir/fit_results.csv` and a clean fit-overlay PNG to `processed_pl_dir/plots/`. **Next →** advances to the next file and closes when all files are done.
+
+After fitting, open `steady_state_basics.py` in VS Code and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
 
 ---
 
@@ -130,11 +132,11 @@ Loads and plots steady-state PL spectra. Fitting workflow is under active develo
 |---|---|
 | `trr_dataset` | xarray accessor (`trrxr`) for TRR data; loading and dataset-level operations |
 | `processing_state` | `ProcessingState` — linear pipeline orchestrator for TRR (noise → normalize → subtract → FFT) |
-| `steady_state` | Loading and helper functions for steady-state PL data |
-| `fitting_functions` | Shared fitting primitives (exponential decay, Lorentzian, etc.) |
+| `steady_state` | `PLFitter` interactive fitter; `load_fit_results` / `plot_peak_param` for cross-dataset comparison; `bfield_contour_plot`; batch fitting helpers |
+| `fitting_functions` | Shared fitting primitives (exponential decay, Lorentzian, Gaussian, peak finding) |
 | `fft_functions` | FFT-based noise analysis utilities |
 | `noise_remover` | Noise removal step used in the TRR pipeline |
-| `utilities` | Filename parsing, config loading, and small shared helpers |
+| `utilities` | `load_config`; filename parsers (`get_field`, `get_temperature`, `get_sample_name`, …); file helpers |
 
 ---
 

@@ -18,22 +18,9 @@ import re
 import shutil
 import yaml
 
-# Add code directory to system path to import custom modules.
 ROOT_DIR = Path(__file__).parent.parent
 from processing_package import ProcessingState
-from processing_package.utilities import get_field, get_sample_name
-
-
-def load_config(config_path):
-    """Load config.yaml and resolve any relative paths relative to the yaml file."""
-    config_path = Path(config_path).resolve()
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-    base = config_path.parent
-    for key in ('data_dir', 'processed_data_dir', 'reports_dir', 'pl_dir', 'vault_dir'):
-        if key in cfg:
-            cfg[key] = (base / cfg[key]).resolve()
-    return cfg
+from processing_package.utilities import get_field, get_sample_name, load_config
 
 
 def _parse_frontmatter(md_path: Path) -> dict:

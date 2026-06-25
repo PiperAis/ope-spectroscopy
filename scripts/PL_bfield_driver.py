@@ -19,22 +19,11 @@ Usage:
 import argparse
 import matplotlib.pyplot as plt
 from pathlib import Path
-import yaml
 
 ROOT_DIR = Path(__file__).parent.parent
 
 from processing_package import bfield_contour_plot
-
-def load_config(config_path):
-    config_path = Path(config_path).resolve()
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-    base = config_path.parent
-    for key in ('data_dir', 'processed_data_dir', 'reports_dir', 'pl_dir',
-                'pl_bfield_dir'):
-        if key in cfg:
-            cfg[key] = (base / cfg[key]).resolve()
-    return cfg
+from processing_package.utilities import load_config
 
 
 if __name__ == "__main__":
