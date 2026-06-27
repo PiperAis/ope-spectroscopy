@@ -1,7 +1,11 @@
 '''
-Runs all of the TRR processing scripts and generates a report.
+Runs all TRR processing steps and generates a report.
 
 Noise removal step does not work if run in an interactive environment.
+
+Usage:
+    python Full_TRR_Report_Generator.py --project <project_folder_name>
+    python Full_TRR_Report_Generator.py --project <project_folder_name> --sync-obsidian
 '''
 #%%
 # ---- User Input ---- #
@@ -13,11 +17,12 @@ expt_date = "test"
 
 # ---- Import modules ---- #
 import argparse
+import shutil
 from pathlib import Path
 
-# ROOT_DIR = Path(__file__).parent.parent
 from processing_package import ProcessingState
 from processing_package.utilities import load_config
+from processing_package.obsidian_integration import generate_dataset_notes
 
 
 if __name__ == "__main__":
@@ -25,25 +30,34 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run TRR processing pipeline.")
     parser.add_argument('--project', required=True,
                         help="Project folder name")
+    parser.add_argument('--sync-obsidian', action='store_true',
+                        help="Copy report to Obsidian vault and generate dataset notes")
     args = parser.parse_args()
 
     cfg = load_config(args.project)
 
-    experiment = ProcessingState(experiment_name = expt_date,
-                                   steps_list=['noise corrected',
-                                               'normalized',
-                                               'processed',
-                                               'FFT'],
-                                   project_config = cfg)
+    experiment = ProcessingState(experiment_name=expt_date,
+                                 steps_list=['noise corrected',
+                                             'normalized',
+                                             'processed',
+                                             'FFT'],
+                                 project_config=cfg)
 
-    # Generate outline for markdown report
     report_file = experiment.generate_report_skeleton()
 
-    # --- Step 1: Remove noise --- #
     experiment.run_noise_remover()
     experiment.normalize_data()
     experiment.subtract_decay()
     experiment.da_fourier_transform()
-# # %%
+
+    if args.sync_obsidian:
+        shutil.copytree(cfg['reports_dir'] / expt_date,
+                        cfg['project_vault'] / expt_date / 'report',
+                        dirs_exist_ok=True)
+        generate_dataset_notes(
+            processed_data_dir=experiment.save_dir,
+            vault_expt_dir=cfg['project_vault'] / expt_date,
+            expt_name=expt_date,
+        )
 
 # %%
