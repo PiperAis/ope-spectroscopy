@@ -21,45 +21,13 @@ COMPARISON PLOTS — run the #%% cells below interactively in VS Code
 
 #%%
 # ---- Imports and config (run this cell first for interactive use) ---- #
-from pathlib import Path
 
-from processing_package.steady_state import (
-    PLFitter, load_fit_results, plot_peak_param
-)
-from processing_package.utilities import load_config as _load_config
-
-ROOT_DIR = Path(__file__).parent.parent
-
-
-def load_config(project_name: str) -> dict:
-    """Load config.yaml from a project folder adjacent to the Code directory."""
-    config_path = ROOT_DIR.parent / project_name / 'config.yaml'
-    return _load_config(config_path)
-
-
-def select_files(initial_dir: Path) -> list[Path]:
-    """Open a file browser in initial_dir; return selected CSV paths."""
-    import tkinter as tk
-    from tkinter import filedialog
-
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-
-    chosen = filedialog.askopenfilenames(
-        title="Select PL data files to fit",
-        initialdir=str(initial_dir),
-        filetypes=[('CSV files', '*.csv'), ('All files', '*.*')],
-        parent=root,
-    )
-    root.destroy()
-    return [Path(p) for p in chosen]
-
+from processing_package.steady_state import PLFitter, load_fit_results, plot_peak_param
+from processing_package.utilities import load_config, select_files
 
 # Set project name here for interactive cell use:
-# project_name = '07_CrSBr_Cryo4'
+# project_name = 'CrSBr-4'
 # cfg = load_config(project_name)
-
 
 #%%
 # ---- Comparison plots ---- #
@@ -78,14 +46,15 @@ def select_files(initial_dir: Path) -> list[Path]:
 # All peaks on one plot, coloured by peak index:
 # plot_peak_param(results, x_col='field', y_col='energy', group_by='peak_index')
 
-
+#%%
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import argparse
+    from pathlib import Path
 
     parser = argparse.ArgumentParser(description="Interactive PL fitter.")
     parser.add_argument('--project', required=True,
-                        help="Project folder name (must be adjacent to the Code directory)")
+                        help="Project folder name.")
     parser.add_argument('--files', nargs='+', default=None,
                         help="Explicit CSV paths — skips the file browser")
     args = parser.parse_args()

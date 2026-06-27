@@ -20,28 +20,17 @@ import argparse
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).parent.parent
-
 from processing_package import bfield_contour_plot
 from processing_package.utilities import load_config
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PL vs. B-field processing.")
-    parser.add_argument(
-        '--project',
-        default=None,
-        help="Name of a directory in the same parent folder as this script "
-             "containing config.yaml",
-    )
-    args, _ = parser.parse_known_args()
+    parser.add_argument('--project', required=True,
+                        help="Project folder name")
+    args = parser.parse_args()
 
-    if args.project:
-        config_path = ROOT_DIR.parent / args.project / 'config.yaml'
-    else:
-        config_path = ROOT_DIR.parent / '07_CrSBr_Cryo4' / 'config.yaml'
-
-    cfg = load_config(config_path)
+    cfg = load_config(args.project)
 
     # experiment_date = '2026-03-03'
     data_path = Path(cfg['pl_bfield_dir'])

@@ -15,7 +15,7 @@ expt_date = "test"
 import argparse
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).parent.parent
+# ROOT_DIR = Path(__file__).parent.parent
 from processing_package import ProcessingState
 from processing_package.utilities import load_config
 
@@ -23,19 +23,11 @@ from processing_package.utilities import load_config
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Run TRR processing pipeline.")
-    parser.add_argument(
-        '--project',
-        default=None,
-        help="Name of a directory in the same parent folder as this script containing config.yaml"
-    )
-    args, _ = parser.parse_known_args()
+    parser.add_argument('--project', required=True,
+                        help="Project folder name")
+    args = parser.parse_args()
 
-    if args.project:
-        config_path = ROOT_DIR.parent / args.project / 'config.yaml'
-    else:
-        config_path = ROOT_DIR.parent / '07_CrSBr_Cryo4' / 'config.yaml'
-
-    cfg = load_config(config_path)
+    cfg = load_config(args.project)
 
     experiment = ProcessingState(experiment_name = expt_date,
                                    steps_list=['noise corrected',
@@ -49,9 +41,6 @@ if __name__ == "__main__":
 
     # --- Step 1: Remove noise --- #
     experiment.run_noise_remover()
-
-    # --- Step 2: Processing (normalize and subtract decay) --- #
-
     experiment.normalize_data()
     experiment.subtract_decay()
     experiment.da_fourier_transform()

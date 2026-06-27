@@ -4,37 +4,90 @@ Shared helpers used across data types (TRR and steady-state).
 - load_config: read a project config.yaml and resolve all relative paths
 - Filename parsers: get_field, get_temperature, get_sample_name, get_spot,
   get_scale_factor, get_rzero
-- File helpers: get_file_paths, get_file_names
+- File helpers: select_files, get_file_paths, get_file_names
 
 Keep this data-type-agnostic — anything specific to one measurement type
 belongs in that type's module. Filename format:
 ##-flake[sample]-[temp]K-[bfield]T-[scale]SF-[R0]mV-[tokens].
 """
 
-import re
-import pathlib
 from pathlib import Path
+import re
+import warnings
 import yaml
 import xarray as xr
 
-_PATH_KEYS = (
+_ROOT_DIR = Path(__file__).parent.parent
+_SETTINGS_KEYS = (
+    'projects_dir', 'vault_root',
+)
+_DATA_PATH_KEYS = (
     'data_dir', 'processed_data_dir', 'reports_dir',
-    'pl_dir', 'processed_pl_dir', 'pl_bfield_dir', 'vault_dir',
+    'pl_dir', 'processed_pl_dir', 'vault_dir',
 )
 
 
-def load_config(config_path: Path) -> dict:
-    """Load config.yaml and resolve all relative paths to absolute paths."""
-    config_path = Path(config_path).resolve()
+def _load_settings(settings_path) -> dict:
+    """Load machine_settings.yaml and store paths."""
+    settings_path = Path(settings_path).resolve()
+    with open(settings_path) as f:
+        settings = yaml.safe_load(f)
+    for key in _SETTINGS_KEYS:
+        if key in settings:
+            settings[key] = Path(settings[key]).resolve()
+    return settings
+
+def load_config(project_name: str, settings_path: Path = _ROOT_DIR/'machine_settings.yaml') -> dict:
+    """
+    Load config.yaml for project (or use default config if project doesn't have its own) 
+    and resolve all relative paths to absolute paths.
+    """
+    settings = _load_settings(settings_path)
+    projects_dir = Path(settings['projects_dir'])
+    vault_root = settings.get('vault_root')
+
+    if not projects_dir.exists():
+        warnings.warn(f"projects_dir does not exist: {projects_dir}. Check machine_settings.yaml.")
+
+    config_path = (projects_dir / project_name / 'config.yaml').resolve()
+    if not config_path.exists():
+        config_path = (_ROOT_DIR / 'config.yaml').resolve()
+        print("Project config not found, using default config.")
+
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
-    base = config_path.parent
-    for key in _PATH_KEYS:
+    for key in _DATA_PATH_KEYS:
         if key in cfg:
-            cfg[key] = (base / cfg[key]).resolve()
+            cfg[key] = (projects_dir / project_name / cfg[key]).resolve()
+            if not cfg[key].exists():
+                warnings.warn(f"Config path does not exist — {key}: {cfg[key]}")
+    if vault_root:
+        cfg['project_vault'] = Path(vault_root) / project_name
+
     return cfg
 
 #----File management----#
+
+def select_files(initial_dir: Path) -> list[Path]:
+    """Open a file browser in initial_dir; return selected CSV paths."""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    if not initial_dir.exists():
+        raise FileNotFoundError(f"PL directory not found: {initial_dir}")
+    
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    
+    chosen = filedialog.askopenfilenames(
+        title="Select PL data files to fit",
+        initialdir=str(initial_dir),
+        filetypes=[('CSV files', '*.csv'), ('All files', '*.*')],
+        parent=root,
+    )
+    root.destroy()
+    return [Path(p) for p in chosen]
 
 def get_file_paths(
                     dir : Path, 
@@ -58,7 +111,7 @@ def get_file_paths(
 
 #----Parsing Filenames----#
 
-def get_field(filename : str | pathlib.PurePath) -> float | None:
+def get_field(filename : str | Path) -> float | None:
     """ 
     Gets magnetic field from data filename, returning it as a str or 
     None if not found. Assumes filename structure is (e.g.)
@@ -80,7 +133,7 @@ def get_field(filename : str | pathlib.PurePath) -> float | None:
     else:
         return None
 
-def get_sample_name(filename : str | pathlib.PurePath) -> str:
+def get_sample_name(filename : str | Path) -> str:
     """ Gets sample name from data filename, returning 'unnamed
     sample' if not found. 
     """
@@ -97,7 +150,7 @@ def get_sample_name(filename : str | pathlib.PurePath) -> str:
     else:
         return 'unnamed sample'
 
-def get_scale_factor(filename : str | pathlib.PurePath) -> int:
+def get_scale_factor(filename : str | Path) -> int:
     """ 
     Gets scale factor from data filename and returns it as an int. 
     Returns 1 if pattern is not found. 
@@ -116,7 +169,7 @@ def get_scale_factor(filename : str | pathlib.PurePath) -> int:
     else:
         return 1
 
-def get_rzero(filename : str | pathlib.PurePath) -> float:
+def get_rzero(filename : str | Path) -> float:
     """ 
     Gets r_0 from data filename and returns it as a float. Returns 1 if 
     pattern is not found. 
@@ -147,7 +200,7 @@ def get_spot(filename: str) -> str:
         return spot
     return 'unknown spot'
 
-def get_temperature(filename: str | pathlib.PurePath) -> float | None:
+def get_temperature(filename: str | Path) -> float | None:
     """
     Gets temperature in Kelvin from filename (e.g. '1p6K' → 1.6, '10K' → 10.0).
     Returns None if not found.

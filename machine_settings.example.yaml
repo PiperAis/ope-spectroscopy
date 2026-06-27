@@ -1,0 +1,9 @@
+# Set projects_dir to the root folder that contains all of your experiments/projects.
+# If you are using an integrated Obsidian lab notebook, set vault_root to point to the 
+
+# See README.md for detailed setup instructions.
+
+# The processing package reads these at runtime — it contains no paths of its own.
+
+projects_dir: C:/path/to/your/projects
+vault_root: C:/Vaults/your-vault

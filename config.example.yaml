@@ -1,0 +1,13 @@
+# Per-project configuration for locating data.
+# If you are using a different data structure than specified in the README,
+# specify the proper directories relative to the project root, and place
+# this config file in the project root. It will override the default configs
+# used by the driver scripts.
+
+# The processing package reads these at runtime — it contains no paths of its own.
+
+data_dir: ./TRR/raw_data
+processed_data_dir: ./TRR/processed
+reports_dir: ./TRR/reports
+pl_dir: ./PL/raw_data
+processed_pl_dir: ./PL/processed
