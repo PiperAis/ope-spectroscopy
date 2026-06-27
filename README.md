@@ -1,12 +1,18 @@
-# TRR / Steady-State Analysis Package
+# OPE Spectroscopy Package
 
-Python package for processing and analyzing optical spectroscopy data — time-resolved reflectance (TRR) and steady-state photoluminescence (PL), including B-field-dependent measurements. Integrated with an Obsidian lab notebook for automatic note and report generation.
+Python package for processing and analyzing optical spectroscopy data — steady-state photoluminescence (PL), including B-field-dependent measurements, and time-resolved reflectance (TRR) ultrafast measurements. Integrated with an Obsidian lab notebook for automatic note generation (optional).
 
 ---
 
 ## Setup
 
 **Requirements:** Python 3.10+, a virtual environment (recommended).
+
+### Where to install
+
+At time of writing, our group stores data on Box. This package is version-controlled using git, which conflicts with Box's sync behavior, so you should install this package on your *local* drive (for example under C:/Users/<yourname>/Code) and use git to pull updates (and to push them, if you choose to contribute to development!)
+
+To do this, navigate to the folder you'd like to install in (either in a terminal or using your file explorer, then right click the folder and select "Open in Terminal") then execute the commands below.
 
 ```bash
 # 1. Clone the repo
@@ -19,10 +25,16 @@ python -m venv .venv
 # Windows (cmd)
 .venv\Scripts\activate.bat
 
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+
 # macOS / Linux
 source .venv/bin/activate
 
-# 3. Install the package in editable mode
+# 3. Install the package
+pip install .
+
+# If you plan to make ediits, use editable mode
 pip install -e .
 ```
 
@@ -32,46 +44,54 @@ Dependencies (numpy, scipy, xarray, matplotlib, pandas, netcdf4, pyyaml) are dec
 
 ## Project layout
 
-This repo is the **package** — it doesn't contain your data or your project-specific scripts. Each experiment campaign lives in its own project folder alongside your data:
+This repo is the **package** — it doesn't contain your data or your project-specific scripts. It uses 'machine_settings.yaml' and 'config.yaml' to locate your data and other relevant files.
+
+The package assumes the following structure in your data storage folder by default (if you use the default config contained in 'config.example.yaml'). You can change `config.yaml` if you like to use a different default structure.
 
 ```
-MyExperiment/              ← your project folder (not in this repo)
-├── config.yaml            ← points to your data; all paths live here
-├── TRR/
-│   ├── raw_data/
-│   │   └── 2026-07-01/   ← dated folder of raw .csv files from TimeSpec
-│   ├── processed/
-│   └── reports/
-└── PL/
-    ├── raw_data/
-    └── processed/
+<your name> Data              ← your data folder on Box (or wherever you keep your data)
+└──MyExperiment/              ← project folder
+    ├── PL/
+    │   ├── raw_data/
+    │   │   └── 2026-06-25/   ← dated folder of raw .csv files
+    │   └── processed/
+    ├── TRR/                  ← folder for transient reflectance, if you use that technique
+    │   ├── raw_data/
+    │   │   └── 2026-07-01/    ← dated folder of raw files from TimeSpec
+    │   ├── processed/
+    │   └── reports/
+    └── other-measurement-type/
+        ├── raw_data/
+        └── processed/
 ```
-
-The package contains no hardcoded paths. All locations come from `config.yaml`.
 
 ---
 
-## config.yaml
+## machine_settings.yaml and config.yaml
 
-Create a `config.yaml` in your project folder. Paths are resolved relative to the config file:
+Create a `config.yaml` and a `machine_settings.yaml` in your project folder by copying and renaming the example files and editing to match your own project structure if needed. You can get paths to the relevant folders for machine_settings by right-clicking in file explorer and selecting `Copy as Path`.
 
+`machine_settings.yaml` - tells the package where your highest-level data folder is, that all of your project folders live inside of.
+```yaml
+projects_dir: C:/path/to/your/projects
+# Optional: only needed if you want to use integration with an Obsidian lab notebook.
+vault_root: C:/Vaults/your-vault 
+```
+
+`config.yaml` - specifies where (relative to any given project folder) each type of data can be found. You can add directories for additional types of measurements as needed, or modify this to match whatever structure you use, just keep the keys (labels for the directory) the same.
 ```yaml
 data_dir: ./TRR/raw_data
 processed_data_dir: ./TRR/processed
 reports_dir: ./TRR/reports
 pl_dir: ./PL/raw_data
 processed_pl_dir: ./PL/processed
-pl_bfield_dir: ./PL/raw_data/2026-07-01/bfield-sweep   # folder of B-field PL spectra
-
-# Optional — only needed for Obsidian vault integration
-vault_dir: /absolute/path/to/your/obsidian/vault
 ```
 
 ---
 
 ## Filename convention
 
-Raw data files must follow this naming format (dash-delimited, `p` as decimal point):
+Raw data files must follow this naming format using dash-delimited "tokens" for each experimental parameter:
 
 ```
 ##-[sample]-[temp]K-[bfield]T-[scale]SF-[R0]mV-[extra tokens]
@@ -80,20 +100,21 @@ Raw data files must follow this naming format (dash-delimited, `p` as decimal po
 Example: `01-flake1a-1p6K-0p2T-70kSF-120mV-2pass-offset1`
 
 - `##` — per-experiment dataset ID (two digits)
-- Tags are identified by their suffix/format, not by position
-- Unrecognized tokens are preserved as a freeform list
+- Tags are identified by their suffix/format, not by position, so the order is not important.
+- Use `p` for decimals
 - Use `n` prefix for negative fields: `n0p2T` → −0.2 T
+- Unrecognized tokens are preserved as a freeform list in the Obsidian lab notebook if used.
 
 ---
 
 ## Running the scripts
 
-Driver scripts live in `scripts/`. Each takes `--config` pointing to your `config.yaml` and `--date` (or similar) for the data folder to process. Run them from the project folder with the venv active.
+Driver scripts (applications that use the package to process data) live in `scripts/`. Each takes your project name as an input. You can run them through the terminal or in an interactive environment. The `project_name` variable (if running interactively) or `--project` argument (if running in a terminal) should be a string that matches the name of your project folder.
 
 ### TRR processing (report only)
 
 ```bash
-python /path/to/scripts/Full_TRR_Report_Generator.py --config config.yaml --date 2026-07-01
+python /path/to/scripts/Full_TRR_Report_Generator.py --project CrSBr-3
 ```
 
 Runs the full TRR pipeline (noise removal → normalize → subtract decay → FFT) and generates a per-step audit report in `reports_dir`.
@@ -101,18 +122,16 @@ Runs the full TRR pipeline (noise removal → normalize → subtract decay → F
 ### TRR processing + Obsidian vault integration
 
 ```bash
-python /path/to/scripts/TRR_process_to_vault.py --config config.yaml --date 2026-07-01
+python /path/to/scripts/Full_TRR_Report_Generator.py --project CrSBr-3 
 ```
-
-Same as above, then copies the report folder to the vault and auto-generates one Obsidian dataset note per file, pre-filled with filename metadata.
 
 ### PL vs. B-field contour plot
 
 ```bash
-python /path/to/scripts/PL_bfield_driver.py --config config.yaml
+python /path/to/scripts/PL_bfield_driver.py --project CrSBr-3
 ```
 
-Generates a heatmap of PL intensity vs. energy and magnetic field from the folder specified by `pl_bfield_dir` in config.
+Generates a heatmap of PL intensity vs. energy and magnetic field from the folder specified by `pl_bfield_dir` in config. (Soon to be changed since I'll be integrating this with the general steady-state driver.)
 
 ### Steady-state PL — interactive fitter
 
@@ -122,7 +141,7 @@ python /path/to/scripts/steady_state_basics.py --project MyExperiment
 
 Opens a file browser in the project's `pl_dir` — navigate to a date subfolder and select one or more CSV files. An interactive matplotlib window opens: left-click to place peak markers, right-click to remove them, zoom to set the fit range, then choose **Fit Gaussian** or **Fit Lorentzian**. **Save** writes a row per peak to `processed_pl_dir/fit_results.csv` and a clean fit-overlay PNG to `processed_pl_dir/plots/`. **Next →** advances to the next file and closes when all files are done.
 
-After fitting, open `steady_state_basics.py` in VS Code and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
+After fitting, open `steady_state_basics.py` in VS Code (or your Python environment of choice) and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
 
 ---
 
@@ -140,8 +159,5 @@ After fitting, open `steady_state_basics.py` in VS Code and run the `#%%` compar
 
 ---
 
-## Notes
 
-- The package is installed editable (`pip install -e .`). Any edits to `processing_package/` take effect immediately — no reinstall needed.
-- The fitting functionality in `PL_bfield_driver.py` (Lorentzian peak fitting per spectrum) is currently out of date and not reliable.
-- If you use Obsidian, set `vault_dir` to the absolute path of your vault root. The integration writes notes under `vault_dir/<date>/`.
+

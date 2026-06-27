@@ -20,8 +20,8 @@ import argparse
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from processing_package import bfield_contour_plot
-from processing_package.utilities import load_config
+from opespec import bfield_contour_plot
+from opespec.utilities import load_config
 
 
 if __name__ == "__main__":

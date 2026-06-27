@@ -20,9 +20,9 @@ import argparse
 import shutil
 from pathlib import Path
 
-from processing_package import ProcessingState
-from processing_package.utilities import load_config
-from processing_package.obsidian_integration import generate_dataset_notes
+from opespec import ProcessingState
+from opespec.utilities import load_config
+from opespec.obsidian_integration import generate_dataset_notes
 
 
 if __name__ == "__main__":

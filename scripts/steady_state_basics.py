@@ -20,12 +20,12 @@ COMPARISON PLOTS — run the #%% cells below interactively in VS Code
 """
 
 #%%
-# ---- Imports and config (run this cell first for interactive use) ---- #
+# ---- Imports and config (uncomment and run this cell first for interactive use) ---- #
 
-from processing_package.steady_state import PLFitter, load_fit_results, plot_peak_param
-from processing_package.utilities import load_config, select_files
+from opespec.steady_state import PLFitter, load_fit_results, plot_peak_param
+from opespec.utilities import load_config, select_files
 
-# Set project name here for interactive cell use:
+## Set project name here for interactive cell use:
 # project_name = 'CrSBr-4'
 # cfg = load_config(project_name)
 

@@ -29,12 +29,13 @@ import pathlib
 from pathlib import Path
 from scipy.optimize import curve_fit
 import xarray as xr
-from . import utilities
 
 xr.set_options(keep_attrs=True)
 
 from . import fitting_functions as ff
-import processing_package as pp
+from . import NoiseRemover
+from . import add_noise_removal_buttons
+from . import utilities
 
 @xr.register_dataset_accessor("trrxr")
 class TRRDataset:
@@ -184,10 +185,10 @@ class TRRDataset:
 
         # Create interactive plot
         fig, ax = plt.subplots(figsize=(10, 5))
-        remover = pp.NoiseRemover(data_array, data_array_original, ax, fig)
+        remover = NoiseRemover(data_array, data_array_original, ax, fig)
         fig.canvas.mpl_connect("button_press_event", remover.onclick)
         remover.update_plot()
-        pp.add_noise_removal_buttons(fig, ax, remover)
+        add_noise_removal_buttons(fig, ax, remover)
         plt.show()
 
         final_selected_points = remover.selected_points
