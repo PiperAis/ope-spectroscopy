@@ -22,7 +22,7 @@ _SETTINGS_KEYS = (
     'projects_dir', 'vault_root',
 )
 _DATA_PATH_KEYS = (
-    'data_dir', 'processed_data_dir', 'reports_dir',
+    'trr_dir', 'processed_trr_dir', 'reports_dir',
     'pl_dir', 'processed_pl_dir', 'vault_dir',
 )
 

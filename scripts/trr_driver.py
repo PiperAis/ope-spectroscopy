@@ -18,7 +18,6 @@ expt_date = "test"
 # ---- Import modules ---- #
 import argparse
 import shutil
-from pathlib import Path
 
 from opespec import ProcessingState
 from opespec.utilities import load_config

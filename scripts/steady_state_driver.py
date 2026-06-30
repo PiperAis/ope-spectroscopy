@@ -51,12 +51,15 @@ from opespec.utilities import load_config, select_files
 if __name__ == "__main__":
     import argparse
     from pathlib import Path
+    from opespec import bfield_contour_plot
 
     parser = argparse.ArgumentParser(description="Interactive PL fitter.")
     parser.add_argument('--project', required=True,
                         help="Project folder name.")
     parser.add_argument('--files', nargs='+', default=None,
                         help="Explicit CSV paths — skips the file browser")
+    parser.add_argument('--mode', choices=['fit', 'contour-plot'],
+                        help='What type of processing to execute. Options: fit, contour-plot.')
     args = parser.parse_args()
 
     cfg = load_config(args.project)
@@ -68,6 +71,12 @@ if __name__ == "__main__":
         if not files:
             raise SystemExit("No files selected.")
 
-    print(f"Opening fitter for {len(files)} file(s)...")
-    fitter = PLFitter(files, output_dir=Path(cfg['processed_pl_dir']))
-    fitter.run()
+    if args.mode=='contour-plot':
+        bfield_contour_plot(data_path) #update to handle files list instead, or make dir selection a thing.
+
+    if args.mode=='fit':
+        print(f"Opening fitter for {len(files)} file(s)...")
+        fitter = PLFitter(files, output_dir=Path(cfg['processed_pl_dir']))
+        fitter.run()
+    
+

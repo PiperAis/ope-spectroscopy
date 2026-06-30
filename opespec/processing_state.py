@@ -40,7 +40,7 @@ class ProcessingState:
         :type steps_list: list[str]
         :param project_config: dict of resolved paths and settings,
         typically loaded from a project-level config.yaml. Required
-        keys: data_dir, processed_data_dir, reports_dir.
+        keys: trr_dir, processed_trr_dir, reports_dir.
         :type project_config: dict
 
         This class holds directory paths for loading and saving data
@@ -58,8 +58,8 @@ class ProcessingState:
         self.__step_number = 0
         self.__current_step = self.__steps_list[0]
         self.__previous_step = None
-        self.raw_data_dir = Path(project_config['data_dir']) / experiment_name
-        self.save_dir = Path(project_config['processed_data_dir']) / experiment_name
+        self.raw_data_dir = Path(project_config['trr_dir']) / experiment_name
+        self.save_dir = Path(project_config['processed_trr_dir']) / experiment_name
         self.load_dir = self.save_dir
         self.reports_dir = Path(project_config['reports_dir']) / experiment_name
         self.plots_dir = self.reports_dir

@@ -80,8 +80,8 @@ vault_root: C:/Vaults/your-vault
 
 `config.yaml` - specifies where (relative to any given project folder) each type of data can be found. You can add directories for additional types of measurements as needed, or modify this to match whatever structure you use, just keep the keys (labels for the directory) the same.
 ```yaml
-data_dir: ./TRR/raw_data
-processed_data_dir: ./TRR/processed
+trr_dir: ./TRR/raw_data
+processed_trr_dir: ./TRR/processed
 reports_dir: ./TRR/reports
 pl_dir: ./PL/raw_data
 processed_pl_dir: ./PL/processed
@@ -114,7 +114,7 @@ Driver scripts (applications that use the package to process data) live in `scri
 ### TRR processing (report only)
 
 ```bash
-python /path/to/scripts/Full_TRR_Report_Generator.py --project CrSBr-3
+python /path/to/scripts/trr_driver.py --project CrSBr-3
 ```
 
 Runs the full TRR pipeline (noise removal → normalize → subtract decay → FFT) and generates a per-step audit report in `reports_dir`.
@@ -122,7 +122,7 @@ Runs the full TRR pipeline (noise removal → normalize → subtract decay → F
 ### TRR processing + Obsidian vault integration
 
 ```bash
-python /path/to/scripts/Full_TRR_Report_Generator.py --project CrSBr-3 
+python /path/to/scripts/trr_driver.py --project CrSBr-3 --sync-obsidian
 ```
 
 ### PL vs. B-field contour plot
@@ -136,12 +136,12 @@ Generates a heatmap of PL intensity vs. energy and magnetic field from the folde
 ### Steady-state PL — interactive fitter
 
 ```bash
-python /path/to/scripts/steady_state_basics.py --project MyExperiment
+python /path/to/scripts/steady_state_driver.py --project MyExperiment
 ```
 
 Opens a file browser in the project's `pl_dir` — navigate to a date subfolder and select one or more CSV files. An interactive matplotlib window opens: left-click to place peak markers, right-click to remove them, zoom to set the fit range, then choose **Fit Gaussian** or **Fit Lorentzian**. **Save** writes a row per peak to `processed_pl_dir/fit_results.csv` and a clean fit-overlay PNG to `processed_pl_dir/plots/`. **Next →** advances to the next file and closes when all files are done.
 
-After fitting, open `steady_state_basics.py` in VS Code (or your Python environment of choice) and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
+After fitting, open `steady_state_driver.py` in VS Code (or your Python environment of choice) and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
 
 ---
 
