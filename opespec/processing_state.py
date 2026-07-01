@@ -430,6 +430,10 @@ class ProcessingState:
         
         :param self: Description
                 '''   
+        def is_uniform(time_vals, rtol=1e-6):
+            diffs = np.diff(time_vals)
+            return np.allclose(diffs, diffs[0], rtol=rtol)
+
         def uniform_time_grid(time_vals, y_vals):
                     """ Takes time values and returns a uniform time grid with the same or more points """
                     from scipy.interpolate import interp1d
@@ -459,7 +463,8 @@ class ProcessingState:
             y_vals = da.values.copy()
             time_vals = da.time.values.copy()
 
-            time_vals, y_vals = uniform_time_grid(time_vals, y_vals)
+            if not is_uniform(time_vals):
+                time_vals, y_vals = uniform_time_grid(time_vals, y_vals)
             if apply_hanning_window:
                 window = np.hanning(len(y_vals))
                 y_vals = y_vals * window
