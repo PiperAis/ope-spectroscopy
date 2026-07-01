@@ -9,4 +9,4 @@
 projects_dir: C:/path/to/your/projects
 
 # Optional: only needed if you want to use integration with an Obsidian lab notebook.
-vault_root: C:/Vaults/your-vault
+vault_dir: C:/Vaults/your-vault

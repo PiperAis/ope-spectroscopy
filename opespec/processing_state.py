@@ -64,7 +64,8 @@ class ProcessingState:
         self.reports_dir = Path(project_config['reports_dir']) / experiment_name
         self.plots_dir = self.reports_dir
         self.babyfresh = True
-        self.vault_dir = Path(project_config['vault_dir'])
+        self.vault_dir = Path(project_config['project_vault']) / experiment_name
+        self.datasets : list[xr.Dataset] = []
 
         self.check_directory_existence()
         self.prepare_files()
@@ -110,7 +111,7 @@ class ProcessingState:
         return previous_step
 
     def __str__(self):
-        return f"Experiment from {self.experiment_name}. Steps: {self.steps_list}"
+        return f"Experiment from {self.experiment_name}. Steps: {self.steps_list} You are on {self.current_step}"
 
     def check_directory_existence(self):
         """
@@ -231,9 +232,10 @@ class ProcessingState:
             dataset = TRRDataset.create_trr_dataset(filepath)
             try:
                 dataset.trrxr.save(self.save_dir)
-            except Exception:
+            except OSError as e:
                 print("Error saving DataArray to NetCDF. " \
-                      "Path may be too long.")
+                      f"Path may be too long. ({e})")
+            self.datasets.append(dataset)
 
         self.__previous_step = 'raw'
 
@@ -332,11 +334,10 @@ class ProcessingState:
 
         for filepath in filepaths_list:
             dataset = xr.load_dataset(filepath)
+            dataset = dataset.isel(time=~dataset.get_index("time").duplicated())
             dataset.trrxr._verify_attributes()
-            
+
             data_array = dataset[self.__previous_step].copy()
-            data_array = data_array.sel(
-                time=~data_array.get_index("time").duplicated())
 
             # Keep a copy of the original values to restore masked regions later
             original_values = data_array.values.copy()
@@ -446,11 +447,10 @@ class ProcessingState:
 
         for filepath in filepaths_list:
             dataset = xr.load_dataset(filepath)
+            dataset = dataset.isel(time=~dataset.get_index("time").duplicated())
 
             data_array = dataset[self.__previous_step].copy()
-            data_array = data_array.sel(
-                time=~data_array.get_index("time").duplicated())
-            
+
             da = data_array.dropna('time')
             y_vals = da.values.copy()
             time_vals = da.time.values.copy()
@@ -479,7 +479,6 @@ class ProcessingState:
             plt.ylabel("FFT Magnitude")
             plt.title(f"{dataset.trrxr.set_number} Fourier Transform")
             plt.savefig(fname = self.get_plot_save_path(dataset))
-            plt.show()
 
             self.update_report(dataset) #type: ignore
 

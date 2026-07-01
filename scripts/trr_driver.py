@@ -4,8 +4,8 @@ Runs all TRR processing steps and generates a report.
 Noise removal step does not work if run in an interactive environment.
 
 Usage:
-    python Full_TRR_Report_Generator.py --project <project_folder_name>
-    python Full_TRR_Report_Generator.py --project <project_folder_name> --sync-obsidian
+    python scripts/trr_driver.py --project <project_folder_name>
+    python scripts/trr_driver.py --project <project_folder_name> --sync-obsidian
 '''
 #%%
 # ---- User Input ---- #
@@ -55,7 +55,7 @@ if __name__ == "__main__":
                         dirs_exist_ok=True)
         generate_dataset_notes(
             processed_data_dir=experiment.save_dir,
-            vault_expt_dir=cfg['project_vault'] / expt_date,
+            vault_expt_dir=experiment.vault_dir,
             expt_name=expt_date,
         )
 

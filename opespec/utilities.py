@@ -19,11 +19,11 @@ import xarray as xr
 
 _ROOT_DIR = Path(__file__).parent.parent
 _SETTINGS_KEYS = (
-    'projects_dir', 'vault_root',
+    'projects_dir', 'vault_dir',
 )
 _DATA_PATH_KEYS = (
     'trr_dir', 'processed_trr_dir', 'reports_dir',
-    'pl_dir', 'processed_pl_dir', 'vault_dir',
+    'pl_dir', 'processed_pl_dir',
 )
 
 
@@ -44,7 +44,7 @@ def load_config(project_name: str, settings_path: Path = _ROOT_DIR/'machine_sett
     """
     settings = _load_settings(settings_path)
     projects_dir = Path(settings['projects_dir'])
-    vault_root = settings.get('vault_root')
+    vault_dir = settings.get('vault_dir')
 
     if not projects_dir.exists():
         warnings.warn(f"projects_dir does not exist: {projects_dir}. Check machine_settings.yaml.")
@@ -61,8 +61,8 @@ def load_config(project_name: str, settings_path: Path = _ROOT_DIR/'machine_sett
             cfg[key] = (projects_dir / project_name / cfg[key]).resolve()
             if not cfg[key].exists():
                 warnings.warn(f"Config path does not exist — {key}: {cfg[key]}")
-    if vault_root:
-        cfg['project_vault'] = Path(vault_root) / project_name
+    if vault_dir:
+        cfg['project_vault'] = Path(vault_dir) / project_name
 
     return cfg
 

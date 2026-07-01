@@ -1,5 +1,5 @@
 [project]
-name = "processing-package"
+name = "opespec"
 version = "0.1.0"
 dependencies = [
     "numpy",

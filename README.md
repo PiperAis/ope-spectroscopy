@@ -19,7 +19,7 @@ To do this, navigate to the folder you'd like to install in (either in a termina
 git clone <repo-url>
 cd <repo-folder>
 
-# 2. Create and activate a virtual environment
+# 2. Create and activate a virtual environment inside the ope-spectroscopy folder
 python -m venv .venv
 
 # Windows (cmd)

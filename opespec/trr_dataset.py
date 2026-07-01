@@ -33,8 +33,7 @@ import xarray as xr
 xr.set_options(keep_attrs=True)
 
 from . import fitting_functions as ff
-from . import NoiseRemover
-from . import add_noise_removal_buttons
+from .noise_remover import NoiseRemover, add_noise_removal_buttons
 from . import utilities
 
 @xr.register_dataset_accessor("trrxr")
@@ -54,10 +53,11 @@ class TRRDataset:
         return None
     
     @classmethod
-    def create_trr_dataset(cls, filepath : pathlib.PurePath | None = None, input_file_type : str = 'TimeSpec'):
+    def create_trr_dataset(cls, filepath : Path | None = None, input_file_type : str = 'TimeSpec'):
 
-        def gen_from_file(filepath : pathlib.PurePath, input_file_type: str = 'TimeSpec'):
+        def gen_from_file(filepath : Path, input_file_type: str = 'TimeSpec'):
 
+            data_index = []
             # Set parameters for import for pandas read_csv function
             if input_file_type == 'TimeSpec':
                 usecols = [0, 1]
@@ -67,7 +67,7 @@ class TRRDataset:
                 data_index = 1
                 time_factor = 10**(-3)
 
-            if input_file_type == 'CSV':
+            else:
                 usecols = None
                 separator = ','
                 header = 'infer'
@@ -80,7 +80,7 @@ class TRRDataset:
                                    sep = separator,
                                    header = header)
 
-            if input_file_type == 'CSV':
+            if input_file_type != 'TimeSpec':
                 data_index = raw_data.columns.tolist()[1]
 
             array = xr.DataArray(data = raw_data[data_index],
@@ -151,14 +151,13 @@ class TRRDataset:
     def _verify_attributes(self):
         
         required_attributes = ['data filename', 'set number', 'sample', 'bfield', 'rzero', 'sf']
-        for item in required_attributes:
-            if item in self._obj.attrs.keys():
-                required_attributes.remove(item)
+        missing_attributes = [item for item in required_attributes
+                               if item not in self._obj.attrs.keys()]
 
-        if 'data filename' in required_attributes:
+        if 'data filename' in missing_attributes:
             raise NameError("Something went wrong when initially loading your dataset, the data filename did not get saved as an attr.")
         
-        if len(required_attributes) > 0:
+        if len(missing_attributes) > 0:
             self._init_set_number()
             self._init_bfield()
             self._init_sample()
@@ -224,7 +223,7 @@ def subtract_background(
     background_data = data.where(data.time < threshold, drop = True)
     average = (background_data.mean().item() if background_data.count() > 0 
                else None)
-    if average is not None:
+    if average:
         data.values -= average
     return data
 
