@@ -50,6 +50,11 @@ def Lorentz(p : list, x, N=None):
     return result
 
 def exp_decay(t, A, B, C):
+    """
+    A (result[0]): Amplitude
+    B (result[1]): 1/(time constant)
+    C (result[2]): Offset
+    """
     return A * np.exp(-B * t) + C
 
 def bi_exp_decay(t, A1, B1, A2, B2, C):

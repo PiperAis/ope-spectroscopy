@@ -58,13 +58,16 @@ class ProcessingState:
         self.__step_number = 0
         self.__current_step = self.__steps_list[0]
         self.__previous_step = None
+
         self.raw_data_dir = Path(project_config['trr_dir']) / experiment_name
         self.save_dir = Path(project_config['processed_trr_dir']) / experiment_name
-        self.load_dir = self.save_dir
         self.reports_dir = Path(project_config['reports_dir']) / experiment_name
-        self.plots_dir = self.reports_dir
-        self.babyfresh = True
         self.vault_dir = Path(project_config['project_vault']) / experiment_name
+        self.load_dir = self.save_dir
+        self.plots_dir = self.reports_dir
+
+        self.babyfresh = True
+        
         self.datasets : list[xr.Dataset] = []
 
         self.check_directory_existence()
@@ -111,7 +114,8 @@ class ProcessingState:
         return previous_step
 
     def __str__(self):
-        return f"Experiment from {self.experiment_name}. Steps: {self.steps_list} You are on {self.current_step}"
+        return f"Experiment from {self.experiment_name}. Steps: {self.steps_list} You are on {self.current_step}. \n\
+            Datasets: {self.datasets}."
 
     def check_directory_existence(self):
         """
@@ -366,7 +370,7 @@ class ProcessingState:
                 params, _ = curve_fit(
                     exp_decay, masked_da.time, masked_da.values, 
                     p0=initial_guess, nan_policy='omit')
-                time_constant = params[0]
+                time_constant = 1 / params[1]
 
                 fit_da = xr.DataArray(
                     exp_decay(data_array.time.values, *params),
@@ -379,7 +383,7 @@ class ProcessingState:
                     original_values - fit_da.values,
                     dims = data_array.dims,
                     coords = data_array.coords,
-                    name = 'subtracted wonk'
+                    name = 'subtracted temp'
                 )
 
                 # Reapply mask for times before t0.
