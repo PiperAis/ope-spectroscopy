@@ -240,6 +240,7 @@ class ProcessingState:
                 print("Error saving DataArray to NetCDF. " \
                       f"Path may be too long. ({e})")
             self.datasets.append(dataset)
+            dataset.drop_duplicates('time', keep='first')
 
         self.__previous_step = 'raw'
 
@@ -338,75 +339,35 @@ class ProcessingState:
 
         for filepath in filepaths_list:
             dataset = xr.load_dataset(filepath)
-            dataset = dataset.isel(time=~dataset.get_index("time").duplicated())
+            dataset.drop_duplicates('time', keep='first')
             dataset.trrxr._verify_attributes()
 
-            data_array = dataset[self.__previous_step].copy()
-
-            # Keep a copy of the original values to restore masked regions later
-            original_values = data_array.values.copy()
+            data_array = dataset[self.__previous_step]
 
             # Mask the data 
             min_time = data_array.time.values[data_array.argmax()]
             max_time = data_array.time.values.max()
-
-            masked_da = data_array.copy()
-            masked_da = masked_da.where(data_array.time >= min_time)
-            masked_da = masked_da.where(data_array.time <= max_time)
-
-            masked_values = masked_da.values.copy()
-
-            # Identify masked positions/indices
-            mask = np.isnan(masked_values)
-
-            # Get an array of the masked values and times with the NaNs dropped
-            masked_values = masked_values[~mask]
-            masked_times = masked_da.time.values[~mask]
+            masked_da = data_array.where((data_array.time >= min_time) & (data_array.time <= max_time)).dropna('time')
 
             # Fit exponential decay to masked data, or subtract data avg if fit fails.
-            initial_guess = [masked_values[0], 0.01, np.mean(masked_values)]
+            initial_guess = [masked_da.values[0], 0.01, masked_da.mean()]
 
             try:
                 params, _ = curve_fit(
-                    exp_decay, masked_da.time, masked_da.values, 
-                    p0=initial_guess, nan_policy='omit')
+                    exp_decay, 
+                    masked_da.time, masked_da.values, 
+                    p0=initial_guess)
                 time_constant = 1 / params[1]
 
-                fit_da = xr.DataArray(
-                    exp_decay(data_array.time.values, *params),
-                    dims = data_array.dims,
-                    coords = data_array.coords, 
-                    name = 'fit')
-
-                # Subtract fit from the original data, unmasked.
-                processed_masked = xr.DataArray(
-                    original_values - fit_da.values,
-                    dims = data_array.dims,
-                    coords = data_array.coords,
-                    name = 'subtracted temp'
-                )
-
-                # Reapply mask for times before t0.
-                fitted_data_array = processed_masked.where(
-                    data_array.time.values >= min_time)
-                subtracted_data = fitted_data_array.values.copy()
+                processed_da = data_array - exp_decay(data_array.time.values, *params)
 
             except RuntimeError:
                 print("Curve fit was unsuccessful. Subtracting DC component instead.")
-                subtracted_data = masked_values - np.mean(masked_values)
+                processed_da = data_array - data_array.mean()
                 time_constant = 0
-
-            # Create data array with subtracted data
-            processed_data = xr.DataArray(
-                subtracted_data,
-                dims = data_array.dims,
-                coords = data_array.coords,
-                attrs = data_array.attrs,
-                name = 'processed'
-            )
             
             plt.figure(figsize=(10, 5))
-            plt.plot(data_array.time, processed_data)
+            plt.plot(data_array.time, processed_da)
             plt.xlabel("Time (ps)")
             plt.ylabel("Differential reflectance")
             plt.title(f"{dataset.attrs['set number']} Decay Subtracted")
@@ -416,10 +377,12 @@ class ProcessingState:
             self.update_report(dataset) #type: ignore
             
             # Add time constant of subtracted decay to attributes
-            processed_data.attrs['time_constant'] = time_constant
+            processed_da.rename("processed")
+            processed_da.assign_attrs(data_array.attrs)
+            processed_da.attrs['time_constant'] = time_constant
 
             # Add subtracted data to dataset
-            dataset.trrxr.add_array(self.__current_step, processed_data)
+            dataset.trrxr.add_array(self.__current_step, processed_da)
             dataset.trrxr.save(self.save_dir)
         return
 
@@ -455,11 +418,9 @@ class ProcessingState:
 
         for filepath in filepaths_list:
             dataset = xr.load_dataset(filepath)
-            dataset = dataset.isel(time=~dataset.get_index("time").duplicated())
+            dataset.drop_duplicates('time', keep='first')
 
-            data_array = dataset[self.__previous_step].copy()
-
-            da = data_array.dropna('time')
+            da = dataset[self.__previous_step].dropna('time')
             y_vals = da.values.copy()
             time_vals = da.time.values.copy()
 
@@ -475,14 +436,16 @@ class ProcessingState:
             freqs = np.fft.fftfreq(len(y_vals), d=dt)
             freqs = [f*1000 for f in freqs]
 
-            fft_dataarray = xr.DataArray(data = fft_magnitude, coords = {'frequency' : freqs}, name = 'raw', attrs = dataset.attrs)
+            fft_dataarray = xr.DataArray(
+                data = fft_magnitude, 
+                coords = {'frequency' : freqs}, 
+                name = 'raw', 
+                attrs = dataset.attrs)
 
             freq_mask = (fft_dataarray.frequency >= 0) & (fft_dataarray.frequency <= max_frequency)
             masked_array = fft_dataarray.where(freq_mask, drop = True)
-            # masked_array.plot.scatter()
 
-            plt.figure(figsize=(10, 5))
-            # plt.plot(freqs, fft_magnitude)
+            plt.figure(figsize=(10, 5), dpi=300)
             plt.plot(masked_array.frequency, masked_array.values)
             plt.xlabel("Frequency (GHz)")
             plt.ylabel("FFT Magnitude")

@@ -47,6 +47,8 @@ def load_pl_data(filepath: Path) -> xr.DataArray:
         },
         name='intensity'
     )
+    array.energy.attrs['units'] = 'eV'
+
     return array
 
 
