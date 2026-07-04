@@ -160,9 +160,6 @@ def fit_gaussian(data_array, inputpeaks, inputamps, inputwids,
     """
     x = data_array.energy.values
     y = data_array.values
-    # y -= y.min()
-    y = smooth(y, 10, 3)
-    y -= min(y)
     num_peaks = len(inputpeaks)
 
     p0, bounds = generateParams_fixed(inputpeaks, inputamps, inputwids,

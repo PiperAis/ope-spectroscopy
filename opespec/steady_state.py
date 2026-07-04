@@ -52,6 +52,14 @@ def load_pl_data(filepath: Path) -> xr.DataArray:
     return array
 
 
+def _subtract_offset(data_array : xr.DataArray):
+
+    minimum_value = data_array.values.min()
+    subtracted_array = data_array - minimum_value
+
+    return subtracted_array
+
+
 def bfield_contour_plot(data_directory : Path):
     
     bfield_file_list = utilities.get_file_paths(data_directory)
@@ -128,8 +136,6 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
 
     x = da.energy.values.astype(float)
     y = da.values.astype(float)
-    y = _safe_smooth(y)
-    y -= y.min()
 
     # Initial amplitude: look up smoothed value at each clicked position.
     inputamps = []
