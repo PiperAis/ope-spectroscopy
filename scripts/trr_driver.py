@@ -11,7 +11,7 @@ Usage:
 # ---- User Input ---- #
 
 # Input the name of the folder containing the data to be processed.
-# Assumes data folder is inside of ..\TRR\raw_data
+# Assumes data folder is inside of ./TRR/raw_data
 
 expt_date = "test"
 
@@ -36,16 +36,19 @@ if __name__ == "__main__":
     cfg = load_config(args.project)
 
     experiment = ProcessingState(experiment_name=expt_date,
-                                 steps_list=['noise corrected',
+                                 steps_list=[
                                              'normalized',
+                                             'noise corrected',
                                              'processed',
-                                             'FFT'],
+                                             'FFT',
+                                             ],
                                  project_config=cfg)
 
     report_file = experiment.generate_report_skeleton()
 
-    experiment.run_noise_remover()
     experiment.normalize_data()
+    experiment.run_noise_remover()
+    # experiment.normalize_data()
     experiment.subtract_decay()
     experiment.da_fourier_transform()
 
@@ -54,7 +57,7 @@ if __name__ == "__main__":
                         cfg['project_vault'] / expt_date / 'report',
                         dirs_exist_ok=True)
         generate_dataset_notes(
-            processed_data_dir=experiment.save_dir,
+            processed_data_dir=experiment.processed_dir,
             vault_expt_dir=experiment.vault_dir,
             expt_name=expt_date,
         )

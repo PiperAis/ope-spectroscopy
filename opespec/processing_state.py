@@ -60,10 +60,11 @@ class ProcessingState:
         self.__previous_step = None
 
         self.raw_data_dir = Path(project_config['trr_dir']) / experiment_name
-        self.save_dir = Path(project_config['processed_trr_dir']) / experiment_name
+        self.processed_dir = Path(project_config['processed_trr_dir']) / experiment_name
         self.reports_dir = Path(project_config['reports_dir']) / experiment_name
         self.vault_dir = Path(project_config['project_vault']) / experiment_name
-        self.load_dir = self.save_dir
+        self.load_dir = self.processed_dir
+        self.save_dir = self.processed_dir
         self.plots_dir = self.reports_dir
 
         self.babyfresh = True
@@ -126,13 +127,13 @@ class ProcessingState:
             raise FileNotFoundError("Project folder does not contain the proper" \
             " structure to locate raw data or raw data is missing.")
         
-        if not self.save_dir.exists():
+        if not self.processed_dir.exists():
             try:
-                self.save_dir.mkdir()
+                self.processed_dir.mkdir()
             except FileNotFoundError:
                 print("Folder for processed TRR data does not exist. Creating " \
                 "TRR/processed directory.")
-                self.save_dir.mkdir(parents = True)
+                self.processed_dir.mkdir(parents = True)
 
         if not self.reports_dir.exists():
             try:
@@ -163,18 +164,18 @@ class ProcessingState:
         self.__previous_step = self.__current_step
         self.__current_step = self.steps_list[self.__step_number]
 
-        previous_save_dir = self.save_dir
+        previous_save_dir = self.processed_dir
         self.load_dir = previous_save_dir
 
         self.check_directory_existence()
 
         return f'Initialized step: {self.__current_step}'
     
-    def get_plot_save_path(self, dataset : xr.Dataset, as_string = True)-> str | pathlib.PurePath:
-        step = self.__current_step
+    def get_plot_save_path(self, data : xr.Dataset | xr.DataArray, as_string = True)-> str | pathlib.PurePath:
+        step = self.current_step
         stepstr = step.replace(' ', '-')
         plot_save_path = (self.plots_dir /
-                          f"{dataset.trrxr.set_number}-{stepstr}.png")
+                          f"{data.trrxr.set_number}-{stepstr}.png")
         if as_string:
             pathstr = str(plot_save_path)
             return pathstr
@@ -235,7 +236,7 @@ class ProcessingState:
         for filepath in filepaths_list:
             dataset = TRRDataset.create_trr_dataset(filepath)
             try:
-                dataset.trrxr.save(self.save_dir)
+                dataset.trrxr.save(self.processed_dir)
             except OSError as e:
                 print("Error saving DataArray to NetCDF. " \
                       f"Path may be too long. ({e})")
@@ -245,6 +246,15 @@ class ProcessingState:
         self.__previous_step = 'raw'
 
         return None
+    
+    def plot_step_results(self, dataset):
+        data_array = dataset[f'{self.current_step}']
+        plt.figure(figsize=(10, 5))
+        plt.plot(data_array.time, data_array.values)
+        plt.title(f"{dataset.attrs['set number']} {self.current_step}")
+        plt.savefig(fname = self.get_plot_save_path(dataset))
+        plt.clf()
+        return
     
     def update_report(self, dataset : xr.Dataset, 
                       caption : str = '', 
@@ -301,7 +311,7 @@ class ProcessingState:
             dataset = xr.load_dataset(filepath)
             dataset.trrxr.remove_noise(processor = self)
             self.update_report(dataset)
-            dataset.trrxr.save(self.save_dir)
+            dataset.trrxr.save(self.processed_dir)
 
         return
 
@@ -316,21 +326,20 @@ class ProcessingState:
 
         for filepath in filepaths_list:
             dataset = xr.load_dataset(filepath)
-
-            # Load data from the previous processing step
-            data_array = dataset[self.__previous_step].copy()
-
-            # Copy normalization metadata from dataset attrs to the data array
-            # so divide_out_factors can find them.
-            data_array.attrs['sf'] = dataset.trrxr.sf or 1
-            data_array.attrs['rzero'] = dataset.trrxr.rzero or 1
+            data_array = dataset[self.__previous_step]
 
             data_array = subtract_background(data_array, threshold = -2)
             data_array = divide_out_factors(data_array)
 
+            min_time = data_array.time.values[np.argmax(data_array.values)]
+            data_array = data_array.where(data_array.time>=min_time)
+
             # Add the processed data to the dataset and save
             dataset.trrxr.add_array(self.__current_step, data_array)
-            dataset.trrxr.save(self.save_dir)
+            dataset.trrxr.save(self.processed_dir)
+            self.plot_step_results(dataset)
+            self.update_report(dataset)
+
         return None
     
     def subtract_decay(self):
@@ -345,9 +354,10 @@ class ProcessingState:
             data_array = dataset[self.__previous_step]
 
             # Mask the data 
-            min_time = data_array.time.values[data_array.argmax()]
-            max_time = data_array.time.values.max()
-            masked_da = data_array.where((data_array.time >= min_time) & (data_array.time <= max_time)).dropna('time')
+            # min_time = data_array.time.values[np.argmax(data_array.values)]
+            # max_time = data_array.time.values.max()
+            # masked_da = data_array.where((data_array.time >= min_time) & (data_array.time <= max_time)).dropna('time')
+            masked_da = data_array.dropna('time')
 
             # Fit exponential decay to masked data, or subtract data avg if fit fails.
             initial_guess = [masked_da.values[0], 0.01, masked_da.mean()]
@@ -363,27 +373,28 @@ class ProcessingState:
 
             except RuntimeError:
                 print("Curve fit was unsuccessful. Subtracting DC component instead.")
-                processed_da = data_array - data_array.mean()
+                processed_da = data_array - masked_da.mean()
                 time_constant = 0
             
-            plt.figure(figsize=(10, 5))
-            plt.plot(data_array.time, processed_da)
-            plt.xlabel("Time (ps)")
-            plt.ylabel("Differential reflectance")
-            plt.title(f"{dataset.attrs['set number']} Decay Subtracted")
-            plt.savefig(fname = self.get_plot_save_path(dataset))
-            plt.clf()
+            # plt.figure(figsize=(10, 5))
+            # plt.plot(data_array.time, processed_da)
+            # plt.xlabel("Time (ps)")
+            # plt.ylabel("Differential reflectance")
+            # plt.title(f"{dataset.attrs['set number']} Decay Subtracted")
+            # plt.savefig(fname = self.get_plot_save_path(dataset))
+            # plt.clf()
 
-            self.update_report(dataset) #type: ignore
-            
             # Add time constant of subtracted decay to attributes
+            # processed_da = processed_da.where((data_array.time >= min_time) & (data_array.time <= max_time))
             processed_da.rename("processed")
             processed_da.assign_attrs(data_array.attrs)
             processed_da.attrs['time_constant'] = time_constant
 
             # Add subtracted data to dataset
+            self.plot_step_results(dataset)
+            self.update_report(dataset)
             dataset.trrxr.add_array(self.__current_step, processed_da)
-            dataset.trrxr.save(self.save_dir)
+            dataset.trrxr.save(self.processed_dir)
         return
 
     def da_fourier_transform(self, apply_hanning_window : bool = True, max_frequency : float = 100):
@@ -409,9 +420,8 @@ class ProcessingState:
         
         self.initialize_next_step()
         
-        prev_save_dir = self.save_dir
-        new_save_dir = prev_save_dir / 'FFT'    
-        self.save_dir = new_save_dir
+        prev_save_dir = self.processed_dir   
+        self.save_dir = prev_save_dir / 'FFT'
         self.check_directory_existence()
         
         filepaths_list = [f for f in self.load_dir.iterdir() if f.is_file()]
