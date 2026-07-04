@@ -289,75 +289,47 @@ def fit_lorentzian(data_array, inputpeaks, inputamps, inputwids,
 
 #----Old stuff to fix up or get rid of----#
 
-def getDerivative(energies, intensity, smoothingWindow = 4):
-    from scipy.signal import savgol_filter as smooth
-    from numpy import gradient
+# def findPeaks(energies, intensity, smoothingWindow = 4, span = 5, title = ''):
+#     intensity = smooth(intensity, smoothingWindow, 3)
     
-    intensity = smooth(intensity, smoothingWindow, 3)
+#     derivative = getDerivative(energies, intensity, smoothingWindow)
+#     derivative2 = getDerivative2(energies, intensity, smoothingWindow)
     
-    dy = gradient(intensity)
-    dx = gradient(energies)
-    derivative = dy/dx
-    derivative = smooth(derivative, smoothingWindow, 3)
+#     # Find indices where the derivative changes sign
+#     zero_crossings = np.where(np.diff(np.sign(derivative)))[0]
     
-    return derivative
-    
-def getDerivative2(energies, intensity, smoothingWindow = 4):
-    from numpy import gradient
-    
-    dy = gradient(intensity)
-    dx = gradient(energies)
-    derivative = dy/dx
-    derivative = smooth(derivative, smoothingWindow, 3)
-    
-    d2x = gradient(dx)
-    d2y = gradient(dy)
-    derivative2 = d2y/d2x
-    derivative2 = smooth(derivative2, smoothingWindow, 3)
-    
-    return derivative2
-
-def findPeaks(energies, intensity, smoothingWindow = 4, span = 5, title = ''):
-    intensity = smooth(intensity, smoothingWindow, 3)
-    
-    derivative = getDerivative(energies, intensity, smoothingWindow)
-    derivative2 = getDerivative2(energies, intensity, smoothingWindow)
-    
-    # Find indices where the derivative changes sign
-    zero_crossings = np.where(np.diff(np.sign(derivative)))[0]
-    
-    filtered_zero_crossings = []
-    for index in zero_crossings:
-        if index >= span and index + span < len(derivative):
-            if all(derivative[index - i] * derivative[index + i] < 0 for i in range(1, span + 1)):
-                filtered_zero_crossings.append(index)
+#     filtered_zero_crossings = []
+#     for index in zero_crossings:
+#         if index >= span and index + span < len(derivative):
+#             if all(derivative[index - i] * derivative[index + i] < 0 for i in range(1, span + 1)):
+#                 filtered_zero_crossings.append(index)
                 
-    zero_crossings = filtered_zero_crossings
+#     zero_crossings = filtered_zero_crossings
     
-    # Interpolate to find the actual zero crossing points
-    x_zero_crossings = []
+#     # Interpolate to find the actual zero crossing points
+#     x_zero_crossings = []
     
-    for index in zero_crossings:
-        x1, x2 = energies[index], energies[index + 1]
-        y1, y2 = derivative[index], derivative[index + 1]
-        # Linear interpolation formula
-        x_zero = x1 - y1 * (x2 - x1) / (y2 - y1)
-        x_zero_crossings.append(x_zero)
+#     for index in zero_crossings:
+#         x1, x2 = energies[index], energies[index + 1]
+#         y1, y2 = derivative[index], derivative[index + 1]
+#         # Linear interpolation formula
+#         x_zero = x1 - y1 * (x2 - x1) / (y2 - y1)
+#         x_zero_crossings.append(x_zero)
     
-    # Show a figure to verify correct identification of maxima
-    plt.figure(dpi=400)
-    plt.plot(energies, intensity)
-    # plt.plot(energies, derivative)
-    plt.title(str(title))
-    # Use 2nd derivative test to identify maxima
-    peakEnergies = []
-    for zero in zero_crossings:
-        if derivative2[zero] < 0:
-            peakEnergies.append(energies[zero])
-            plt.axvline(energies[zero], color = 'gray', ls = "--")
-    plt.show()
+#     # Show a figure to verify correct identification of maxima
+#     plt.figure(dpi=400)
+#     plt.plot(energies, intensity)
+#     # plt.plot(energies, derivative)
+#     plt.title(str(title))
+#     # Use 2nd derivative test to identify maxima
+#     peakEnergies = []
+#     for zero in zero_crossings:
+#         if derivative2[zero] < 0:
+#             peakEnergies.append(energies[zero])
+#             plt.axvline(energies[zero], color = 'gray', ls = "--")
+#     plt.show()
     
-    return peakEnergies
+#     return peakEnergies
 
 # --- The below functions were written for looking at PL vs temperature data in summer 2024
 # Probably not needed anymore but holding onto them a bit longer until we've implemented
