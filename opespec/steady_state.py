@@ -31,23 +31,26 @@ def load_pl_data(filepath: Path) -> xr.DataArray:
     Assumes columns: Wavelength, Intensity.
     Converts wavelength to energy in eV.
     """
-    data = pd.read_csv(filepath, delimiter=',')
-    wavelength = data['Wavelength'].values
-    wavelength = wavelength
-    energy = 1239.8 / wavelength # type: ignore
-    intensity = data['Intensity'].values
+    
+    if filepath.suffix == '.nc':
+        array = xr.load_dataarray(filepath)
+    else:
+        data = pd.read_csv(filepath, delimiter=',')
+        wavelength = data['Wavelength'].values
+        energy = 1239.8 / wavelength # type: ignore
+        intensity = data['Intensity'].values
 
-    array = xr.DataArray(
-        data=intensity,
-        coords={'energy': energy},
-        attrs={
-            'filename': filepath.name,
-            'sample': utilities.get_sample_name(filepath.name),
-            'spot': utilities.get_spot(filepath.name)
-        },
-        name='intensity'
-    )
-    array.energy.attrs['units'] = 'eV'
+        array = xr.DataArray(
+            data=intensity,
+            coords={'energy': energy},
+            attrs={
+                'filename': filepath.name,
+                'sample': utilities.get_sample_name(filepath.name),
+                'spot': utilities.get_spot(filepath.name)
+            },
+            name='intensity'
+        )
+        array.energy.attrs['units'] = 'eV'
 
     return array
 

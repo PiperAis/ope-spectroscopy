@@ -190,7 +190,6 @@ def fit_gaussian(data_array, inputpeaks, inputamps, inputwids,
         da_masked = data_array.where(maskcondition, drop=True)
         x = da_masked.energy.values
         y = da_masked.values
-        y = smooth(y, 15, 3)
         
         # Plot
         plt.figure(figsize=(6, 6), dpi = 400)
