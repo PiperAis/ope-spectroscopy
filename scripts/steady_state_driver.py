@@ -58,7 +58,7 @@ if __name__ == "__main__":
                         help="Project folder name.")
     parser.add_argument('--files', nargs='+', default=None,
                         help="Explicit CSV paths — skips the file browser")
-    parser.add_argument('--mode', choices=['fit', 'contour-plot'],
+    parser.add_argument('--mode', choices=['fit', 'contour-plot'], default='fit',
                         help='What type of processing to execute. Options: fit, contour-plot.')
     args = parser.parse_args()
 
