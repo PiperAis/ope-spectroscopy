@@ -10,16 +10,19 @@ Python package for processing and analyzing optical spectroscopy data — steady
 
 ### Where to install
 
-At time of writing, our group stores data on Box. This package is version-controlled using git, which conflicts with Box's sync behavior, so you should install this package on your *local* drive (for example under C:/Users/<yourname>/Code) and use git to pull updates (and to push them, if you choose to contribute to development!)
+At time of writing, our group stores data on Box. This package is version-controlled using git, which conflicts with Box's sync behavior, so you should install this package on your *local* drive (for example under C:/Users/\<yourname\>/Code) and use git to pull updates (and to push them, if you choose to contribute to development!)
 
 To do this, navigate to the folder you'd like to install in (either in a terminal or using your file explorer, then right click the folder and select "Open in Terminal") then execute the commands below.
 
-```bash
-# 1. Clone the repo
-git clone <repo-url>
-cd <repo-folder>
 
-# 2. Create and activate a virtual environment inside the ope-spectroscopy folder
+1. Clone the repo and navigate into the directory
+```bash
+git clone https://github.com/PiperAis/ope-spectroscopy
+cd ope-spectroscopy
+```
+
+2. Create and activate a virtual environment inside the ope-spectroscopy folder [recommended - this creates a separate environment to install this package and its dependencies, which prevents potential conflicts with other packages you may use elsewhere.]
+```bash
 python -m venv .venv
 
 # Windows (cmd)
@@ -30,11 +33,13 @@ python -m venv .venv
 
 # macOS / Linux
 source .venv/bin/activate
+```
 
-# 3. Install the package
+3. Install the package
+```bash
 pip install .
 
-# If you plan to make ediits, use editable mode
+# If you plan to make edits, use editable mode
 pip install -e .
 ```
 
