@@ -1,43 +1,13 @@
-"""
-Driver script for PL vs. B-field processing.
-
-Generates a contour (heatmap) plot of PL intensity as a function of
-energy and magnetic field. Optionally fits each spectrum with Lorentzians
-and plots peak positions vs. field, however this functionality is out of
-date and needs to be updated to work with the current version of the
-package.
-
-Data directory is read from config.yaml (pl_bfield_dir key).
-Pass --project <folder name> to use a different project's config;
-defaults to 07_CrSBr_Cryo4.
-
-Usage:
-    python PL_bfield_driver.py
-    python PL_bfield_driver.py --project <project_folder_name>
-"""
-
-import argparse
-import matplotlib.pyplot as plt
-from pathlib import Path
-
-from opespec import bfield_contour_plot
-from opespec.utilities import load_config
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PL vs. B-field processing.")
-    parser.add_argument('--project', required=True,
-                        help="Project folder name")
-    args = parser.parse_args()
-
-    cfg = load_config(args.project)
-
-    # experiment_date = '2026-03-03'
-    data_path = Path(cfg['pl_bfield_dir'])
-
-    bfield_contour_plot(data_path)
-
-# ---- Old code, to repurpose for fitting and tracking peaks vs bfield ---- #
+# Scratch notes: future work for fitting peaks vs. magnetic field (Zeeman splitting).
+#
+# Pulled from PL_bfield_driver.py before that script was deleted (its contour-plot
+# functionality is now handled by steady_state_driver.py --mode contour-plot).
+# This is NOT runnable code — it predates the current fitting_functions/steady_state
+# API and needs to be rebuilt against PLFitter / fit_results.csv (e.g. via
+# plot_peak_param, or a new quadratic-fit helper) rather than restored as-is.
+#
+# Intent: fit N Lorentzian/Gaussian peaks per spectrum across a B-field sweep,
+# then fit each peak's energy vs. field to a quadratic to characterize splitting.
 
 # Fit parameters: [amp1, cen1, wid1, amp2, cen2, wid2, ...]
 # p0 = [

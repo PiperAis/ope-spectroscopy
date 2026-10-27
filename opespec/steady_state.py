@@ -16,7 +16,6 @@ import pandas as pd
 import xarray as xr
 from pathlib import Path
 import matplotlib.pyplot as plt
-import scipy.constants as const
 from scipy.optimize import minimize
 from scipy.signal import savgol_filter as smooth
 from matplotlib.widgets import Button
@@ -63,28 +62,31 @@ def _subtract_offset(data_array : xr.DataArray):
     return subtracted_array
 
 
-def bfield_contour_plot(data_directory : Path):
-    
-    bfield_file_list = utilities.get_file_paths(data_directory)
-    spectra = []
-    for filepath in sorted(bfield_file_list):
-        df = pd.read_csv(filepath)                    # one spectrum
-        field = utilities.get_field(filepath)          # reuse the existing helper
-        da = xr.DataArray(
-            df['Intensity'].values,
-            coords={"wavelength": df['Wavelength'].values,
-                    },
-            dims=["wavelength"],
-        )
-        energy_values = const.h * const.c / (da['wavelength'].values * 1e-9) / const.e
-        da = da.expand_dims(field=[field])              # tag this spectrum with its field
-        da = da.assign_coords(
-            energy=("wavelength", energy_values)
-            )
-        spectra.append(da)
+def bfield_contour_plot(files: Path | list[Path]) -> None:
+    """
+    Plots a contour (heatmap) of PL intensity vs. energy and magnetic field.
 
-    bfield_map = xr.concat(spectra, dim="field")       # stack into 2D
-    bfield_map.plot.contourf(x="Magnetic Field (T)", y="Energy (eV)")    # contour map, axes auto-labeled
+    files: a directory (all files inside are used) or a list of PL spectrum
+    CSVs, one per field value. Field for each is parsed from its filename
+    via utilities.get_field.
+    """
+    if isinstance(files, (str, Path)):
+        files = [files]
+    files = [Path(f) for f in files]
+    if len(files) == 1 and files[0].is_dir():
+        files = utilities.get_file_paths(files[0])
+
+    spectra = []
+    for filepath in sorted(files):
+        da = load_pl_data(filepath)
+        field = utilities.get_field(filepath)
+        spectra.append(da.expand_dims(field=[field]))
+
+    bfield_map = xr.concat(spectra, dim="field")
+    bfield_map['field'].attrs = {'long_name': 'Magnetic Field', 'units': 'T'}
+    bfield_map['energy'].attrs['long_name'] = 'Energy'
+
+    bfield_map.plot.contourf(x="field", y="energy")    # contour map, axes auto-labeled from attrs
     plt.show()
 
 def plot_multiple_together(directory: Path) -> None:

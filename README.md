@@ -130,14 +130,6 @@ Runs the full TRR pipeline (noise removal → normalize → subtract decay → F
 python /path/to/scripts/trr_driver.py --project CrSBr-3 --sync-obsidian
 ```
 
-### PL vs. B-field contour plot
-
-```bash
-python /path/to/scripts/PL_bfield_driver.py --project CrSBr-3
-```
-
-Generates a heatmap of PL intensity vs. energy and magnetic field from the folder specified by `pl_bfield_dir` in config. (Soon to be changed since I'll be integrating this with the general steady-state driver.)
-
 ### Steady-state PL — interactive fitter
 
 ```bash
@@ -145,6 +137,14 @@ python /path/to/scripts/steady_state_driver.py --project MyExperiment
 ```
 
 Opens a file browser in the project's `pl_dir` — navigate to a date subfolder and select one or more CSV files. An interactive matplotlib window opens: left-click to place peak markers, right-click to remove them, zoom to set the fit range, then choose **Fit Gaussian** or **Fit Lorentzian**. **Save** writes a row per peak to `processed_pl_dir/fit_results.csv` and a clean fit-overlay PNG to `processed_pl_dir/plots/`. **Next →** advances to the next file and closes when all files are done.
+
+### PL vs. B-field contour plot
+
+```bash
+python /path/to/scripts/steady_state_driver.py --project CrSBr-3 --mode contour-plot
+```
+
+Opens a directory browser in the project's `pl_dir` — pick the date subfolder containing the B-field series. Generates a heatmap of PL intensity vs. energy and magnetic field (field parsed from each filename). Pass `--files` to skip the browser — either a single directory, or an explicit list of CSV paths.
 
 After fitting, open `steady_state_driver.py` in VS Code (or your Python environment of choice) and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
 

@@ -89,6 +89,26 @@ def select_files(initial_dir: Path) -> list[Path]:
     root.destroy()
     return [Path(p) for p in chosen]
 
+def select_directory(initial_dir: Path) -> Path | None:
+    """Open a directory browser in initial_dir; return the chosen directory, or None."""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    if not initial_dir.exists():
+        raise FileNotFoundError(f"PL directory not found: {initial_dir}")
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+
+    chosen = filedialog.askdirectory(
+        title="Select directory of PL data files",
+        initialdir=str(initial_dir),
+        parent=root,
+    )
+    root.destroy()
+    return Path(chosen) if chosen else None
+
 def get_file_paths(
                     dir : Path, 
                     condition : str = ''
@@ -131,6 +151,7 @@ def get_field(filename : str | Path) -> float | None:
         bfield = float(bstring)
         return bfield
     else:
+        warnings.warn(f"Could not parse magnetic field from filename: {filename}")
         return None
 
 def get_sample_name(filename : str | Path) -> str:

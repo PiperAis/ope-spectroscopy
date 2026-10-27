@@ -2,7 +2,7 @@
 Driver script for interactive PL fitting and cross-dataset comparison.
 
 INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
-    python scripts/steady_state_basics.py --project 07_CrSBr_Cryo4
+    python scripts/steady_state_driver.py --project MyExperiment
 
     A file browser opens in the project's PL data directory — navigate to a
     date subfolder and select one or more CSV files (Ctrl+A for all).
@@ -15,6 +15,13 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
     Results append to <processed_pl_dir>/fit_results.csv (one row per peak).
     Fit-overlay plots save to <processed_pl_dir>/plots/<stem>_fit.png.
 
+CONTOUR PLOT — PL intensity vs. energy and B-field:
+    python scripts/steady_state_driver.py --project MyExperiment --mode contour-plot
+
+    A directory browser opens in the project's PL data directory — pick the
+    date subfolder containing the B-field series. Pass --files to skip the
+    browser (a single directory, or an explicit list of CSV paths).
+
 COMPARISON PLOTS — run the #%% cells below interactively in VS Code
     after fitting to build up fit_results.csv.
 """
@@ -23,7 +30,7 @@ COMPARISON PLOTS — run the #%% cells below interactively in VS Code
 # ---- Imports and config (uncomment and run this cell first for interactive use) ---- #
 
 from opespec.steady_state import PLFitter, load_fit_results, plot_peak_param
-from opespec.utilities import load_config, select_files
+from opespec.utilities import load_config, select_files, select_directory
 
 ## Set project name here for interactive cell use:
 # project_name = 'CrSBr-4'
@@ -57,24 +64,29 @@ if __name__ == "__main__":
     parser.add_argument('--project', required=True,
                         help="Project folder name.")
     parser.add_argument('--files', nargs='+', default=None,
-                        help="Explicit CSV paths — skips the file browser")
+                        help="Explicit CSV paths, or a single directory — skips the browser")
     parser.add_argument('--mode', choices=['fit', 'contour-plot'], default='fit',
                         help='What type of processing to execute. Options: fit, contour-plot.')
     args = parser.parse_args()
 
     cfg = load_config(args.project)
 
-    if args.files:
-        files = [Path(f) for f in args.files]
-    else:
-        files = select_files(Path(cfg['pl_dir']))
-        if not files:
-            raise SystemExit("No files selected.")
+    if args.mode == 'contour-plot':
+        if args.files:
+            files = [Path(f) for f in args.files]
+        else:
+            files = select_directory(Path(cfg['pl_dir']))
+            if not files:
+                raise SystemExit("No directory selected.")
+        bfield_contour_plot(files)
 
-    if args.mode=='contour-plot':
-        bfield_contour_plot(data_path) #update to handle files list instead, or make dir selection a thing.
-
-    if args.mode=='fit':
+    if args.mode == 'fit':
+        if args.files:
+            files = [Path(f) for f in args.files]
+        else:
+            files = select_files(Path(cfg['pl_dir']))
+            if not files:
+                raise SystemExit("No files selected.")
         print(f"Opening fitter for {len(files)} file(s)...")
         fitter = PLFitter(files, output_dir=Path(cfg['processed_pl_dir']))
         fitter.run()
