@@ -7,7 +7,9 @@ Key components:
   Gaussian or Lorentzian lineshape, save results to CSV + PNG
 - load_fit_results / plot_peak_param: load fit_results.csv and plot any
   parameter pair across datasets (energy vs field, width vs temperature, etc.)
-- bfield_contour_plot: heatmap of PL intensity vs energy and B-field
+- BfieldContourBuilder: interactive heatmap builder for PL intensity vs
+  energy and B-field — colormap, energy bounds, and normalization live,
+  save to PNG when done
 - process_pl_directory_gaussian/lorentzian: batch fitting helpers (older API)
 """
 
@@ -18,7 +20,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
 from scipy.signal import savgol_filter as smooth
-from matplotlib.widgets import Button
+from matplotlib.widgets import Button, TextBox, CheckButtons
+from matplotlib.transforms import Bbox
 from . import fitting_functions as ff
 from . import utilities
 
@@ -62,13 +65,14 @@ def _subtract_offset(data_array : xr.DataArray):
     return subtracted_array
 
 
-def bfield_contour_plot(files: Path | list[Path]) -> None:
+def _load_bfield_map(files: Path | list[Path]) -> xr.DataArray:
     """
-    Plots a contour (heatmap) of PL intensity vs. energy and magnetic field.
+    Loads a set of PL spectra into one 2D (field, energy) DataArray.
 
     files: a directory (all files inside are used) or a list of PL spectrum
     CSVs, one per field value. Field for each is parsed from its filename
-    via utilities.get_field.
+    via utilities.get_field. Sorted by field value (not acquisition order),
+    since B-field sweeps commonly ramp up then back down through zero.
     """
     if isinstance(files, (str, Path)):
         files = [files]
@@ -82,12 +86,143 @@ def bfield_contour_plot(files: Path | list[Path]) -> None:
         field = utilities.get_field(filepath)
         spectra.append(da.expand_dims(field=[field]))
 
-    bfield_map = xr.concat(spectra, dim="field")
+    bfield_map = xr.concat(spectra, dim="field").sortby("field").sortby("energy")
     bfield_map['field'].attrs = {'long_name': 'Magnetic Field', 'units': 'T'}
     bfield_map['energy'].attrs['long_name'] = 'Energy'
+    return bfield_map
 
-    bfield_map.plot.contourf(x="field", y="energy")    # contour map, axes auto-labeled from attrs
-    plt.show()
+
+class BfieldContourBuilder:
+    """
+    Interactive contour (heatmap) builder for PL intensity vs. energy and
+    magnetic field.
+
+    Live controls: colormap, lower/upper energy bound, and a toggle to
+    normalize all spectra against the dataset's global max. Save writes the
+    current figure to a PNG.
+
+    Usage:
+        files = select_directory(Path(cfg['pl_dir']))
+        BfieldContourBuilder(files, output_dir=Path(cfg['processed_pl_dir'])).run()
+    """
+
+    DEFAULT_CMAP = 'inferno'
+
+    def __init__(self, files: Path | list[Path], output_dir: Path):
+        self.data = _load_bfield_map(files)
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        self.cmap = self.DEFAULT_CMAP
+        self.normalize = False
+        self.emin = float(self.data.energy.min())
+        self.emax = float(self.data.energy.max())
+
+        self.fig = None
+        self.ax = None
+        self._cbar = None
+
+    def run(self):
+        self.fig = plt.figure(figsize=(9, 9), layout="constrained")
+
+        outer_gs = self.fig.add_gridspec(nrows=2, ncols=1, height_ratios=[3, 1])
+        self.ax = self.fig.add_subplot(outer_gs[0])  # plot; colorbar auto-placed via ax=
+
+        controls_gs = outer_gs[1].subgridspec(nrows=1, ncols=2, width_ratios=[3, 1])
+        textbox_gs = controls_gs[0].subgridspec(nrows=1, ncols=3)
+        side_gs = controls_gs[1].subgridspec(nrows=2, ncols=1, height_ratios=[2, 1])
+
+        ax_cmap = self.fig.add_subplot(textbox_gs[0, 0])
+        ax_emin = self.fig.add_subplot(textbox_gs[0, 1])
+        ax_emax = self.fig.add_subplot(textbox_gs[0, 2])
+        ax_norm = self.fig.add_subplot(side_gs[0, 0])
+        ax_save = self.fig.add_subplot(side_gs[1, 0])
+
+        self.tb_cmap = TextBox(ax_cmap, '', initial=self.cmap)
+        self.tb_emin = TextBox(ax_emin, '', initial=f"{self.emin:.2f}")
+        self.tb_emax = TextBox(ax_emax, '', initial=f"{self.emax:.2f}")
+        ax_cmap.set_title('Colormap', fontsize=9)
+        ax_emin.set_title('E min (eV)', fontsize=9)
+        ax_emax.set_title('E max (eV)', fontsize=9)
+        self.cb_norm = CheckButtons(ax_norm, ['Normalize to\nglobal max'], [False])
+        self.btn_save = Button(ax_save, 'Save')
+
+        self.tb_cmap.on_submit(self._on_cmap)
+        self.tb_emin.on_submit(self._on_emin)
+        self.tb_emax.on_submit(self._on_emax)
+        self.cb_norm.on_clicked(self._on_normalize)
+        self.btn_save.on_clicked(self._save)
+
+        self._draw()
+        plt.show(block=True)
+
+    # ------------------------------------------------------------------
+    # Internal: compute and draw
+    # ------------------------------------------------------------------
+
+    def _current_data(self):
+        lo, hi = sorted((self.emin, self.emax))
+        cropped = self.data.sel(energy=slice(lo, hi))
+        if self.normalize:
+            cropped = cropped / float(self.data.max())
+        return cropped
+
+    def _draw(self):
+        if self._cbar is not None:
+            self._cbar.remove()
+            self._cbar = None
+        self.ax.cla()
+        data = self._current_data()
+        result = data.plot.contourf(x='field', y='energy', cmap=self.cmap,
+                                     ax=self.ax, add_colorbar=False)
+        self._cbar = self.fig.colorbar(result, ax=self.ax)
+        self._cbar.set_label('Intensity (normalized)' if self.normalize else 'Intensity (arb. units)')
+        self.fig.canvas.draw_idle()
+
+    # ------------------------------------------------------------------
+    # Internal: widget callbacks
+    # ------------------------------------------------------------------
+
+    def _on_cmap(self, text):
+        if text not in plt.colormaps():
+            print(f"Unknown colormap: {text!r}")
+            return
+        self.cmap = text
+        self._draw()
+
+    def _on_emin(self, text):
+        try:
+            self.emin = float(text)
+        except ValueError:
+            print(f"Invalid energy value: {text!r}")
+            return
+        self._draw()
+
+    def _on_emax(self, text):
+        try:
+            self.emax = float(text)
+        except ValueError:
+            print(f"Invalid energy value: {text!r}")
+            return
+        self._draw()
+
+    def _on_normalize(self, _label):
+        self.normalize = not self.normalize
+        self._draw()
+
+    def _save(self, _event):
+        sample = self.data.attrs.get('sample', 'bfield')
+        out_path = self.output_dir / f"{sample.replace(' ', '')}_bfield_contour.png"
+
+        self.fig.canvas.draw()
+        renderer = self.fig.canvas.get_renderer()
+        bbox = Bbox.union([
+            self.ax.get_tightbbox(renderer),
+            self._cbar.ax.get_tightbbox(renderer),
+        ]).transformed(self.fig.dpi_scale_trans.inverted())
+
+        self.fig.savefig(out_path, dpi=200, bbox_inches=bbox)
+        print(f"Saved -> {out_path}")
 
 def plot_multiple_together(directory: Path) -> None:
     """

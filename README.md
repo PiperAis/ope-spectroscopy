@@ -144,7 +144,9 @@ Opens a file browser in the project's `pl_dir` — navigate to a date subfolder 
 python /path/to/scripts/steady_state_driver.py --project CrSBr-3 --mode contour-plot
 ```
 
-Opens a directory browser in the project's `pl_dir` — pick the date subfolder containing the B-field series. Generates a heatmap of PL intensity vs. energy and magnetic field (field parsed from each filename). Pass `--files` to skip the browser — either a single directory, or an explicit list of CSV paths.
+Opens a directory browser in the project's `pl_dir` — pick the date subfolder containing the B-field series. Pass `--files` to skip the browser — either a single directory, or an explicit list of CSV paths.
+
+An interactive matplotlib window opens with a heatmap of PL intensity vs. energy and magnetic field (field parsed from each filename), plus live controls: colormap name, lower/upper energy bound (eV), and a toggle to normalize all spectra against the dataset's global max. **Save** writes the current figure to `processed_pl_dir/<sample>_bfield_contour.png`.
 
 After fitting, open `steady_state_driver.py` in VS Code (or your Python environment of choice) and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
 
@@ -156,7 +158,7 @@ After fitting, open `steady_state_driver.py` in VS Code (or your Python environm
 |---|---|
 | `trr_dataset` | xarray accessor (`trrxr`) for TRR data; loading and dataset-level operations |
 | `processing_state` | `ProcessingState` — linear pipeline orchestrator for TRR (noise → normalize → subtract → FFT) |
-| `steady_state` | `PLFitter` interactive fitter; `load_fit_results` / `plot_peak_param` for cross-dataset comparison; `bfield_contour_plot`; batch fitting helpers |
+| `steady_state` | `PLFitter` interactive fitter; `load_fit_results` / `plot_peak_param` for cross-dataset comparison; `BfieldContourBuilder` interactive contour-plot builder; batch fitting helpers |
 | `fitting_functions` | Shared fitting primitives (exponential decay, Lorentzian, Gaussian, peak finding) |
 | `fft_functions` | FFT-based noise analysis utilities |
 | `noise_remover` | Noise removal step used in the TRR pipeline |

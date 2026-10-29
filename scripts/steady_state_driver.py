@@ -22,6 +22,11 @@ CONTOUR PLOT — PL intensity vs. energy and B-field:
     date subfolder containing the B-field series. Pass --files to skip the
     browser (a single directory, or an explicit list of CSV paths).
 
+    An interactive matplotlib window opens with live controls: colormap
+    name, lower/upper energy bound (eV), and a toggle to normalize all
+    spectra against the dataset's global max. Save writes the current
+    figure to <processed_pl_dir>/<sample>_bfield_contour.png.
+
 COMPARISON PLOTS — run the #%% cells below interactively in VS Code
     after fitting to build up fit_results.csv.
 """
@@ -29,7 +34,7 @@ COMPARISON PLOTS — run the #%% cells below interactively in VS Code
 #%%
 # ---- Imports and config (uncomment and run this cell first for interactive use) ---- #
 
-from opespec.steady_state import PLFitter, load_fit_results, plot_peak_param
+from opespec.steady_state import PLFitter, BfieldContourBuilder, load_fit_results, plot_peak_param
 from opespec.utilities import load_config, select_files, select_directory
 
 ## Set project name here for interactive cell use:
@@ -58,7 +63,6 @@ from opespec.utilities import load_config, select_files, select_directory
 if __name__ == "__main__":
     import argparse
     from pathlib import Path
-    from opespec import bfield_contour_plot
 
     parser = argparse.ArgumentParser(description="Interactive PL fitter.")
     parser.add_argument('--project', required=True,
@@ -78,7 +82,9 @@ if __name__ == "__main__":
             files = select_directory(Path(cfg['pl_dir']))
             if not files:
                 raise SystemExit("No directory selected.")
-        bfield_contour_plot(files)
+        print("Opening contour-plot builder...")
+        builder = BfieldContourBuilder(files, output_dir=Path(cfg['processed_pl_dir']))
+        builder.run()
 
     if args.mode == 'fit':
         if args.files:
