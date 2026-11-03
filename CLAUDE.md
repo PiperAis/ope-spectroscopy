@@ -2,7 +2,7 @@
 
 Orientation for working in this repo. This is a Python package for processing and analyzing optical spectroscopy data (time-resolved reflectance / TRR, and steady-state PL including B-field-dependent measurements), integrated with an Obsidian lab notebook.
 
-For current status and what's being worked on now, see `foundational-system-plan.md` — this file holds the durable context; the plan file holds the evolving task state.
+For current status and what's being worked on now, see `Foundational System Plan.md` — this file holds the durable context; the plan file holds the evolving task state.
 
 ## Architecture
 
