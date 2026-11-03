@@ -599,22 +599,24 @@ class PLFitter:
     Right-click on a marker to remove it.
     Set the fit window with the E min / E max boxes (persists across files;
     toolbar zoom is view-only and does not affect the fit).
-    Use the buttons to fit, save, and advance through files.
+    Use the buttons to fit, save, and move through files. "← Back" (and Next
+    onto an already-visited file) restores that file's markers, fit, range and
+    baseline, so a fit can be saved or adjusted later. The title shows whether
+    the current fit has been saved.
 
     IMPORTANT: Must be run as a plain script, not in a VS Code interactive
     (#%%) cell — the Jupyter kernel intercepts matplotlib click events.
 
     Usage:
-        files = sorted(Path(cfg['pl_dir']).glob('2026-07-01/*.csv'))
-        fitter = PLFitter(files, output_dir=Path(cfg['processed_pl_dir']))
+        fitter = PLFitter(sweep_folder_or_file_list, output_dir=Path(cfg['processed_pl_dir']))
         fitter.run()
 
     Results are appended to <output_dir>/fit_results.csv (one row per peak).
     Fit-overlay plots are saved to <output_dir>/plots/<filename>_fit.png.
     """
 
-    def __init__(self, files: list, output_dir: Path):
-        self.files = [Path(f) for f in files]
+    def __init__(self, files: Path | list[Path], output_dir: Path):
+        self.files = _spectrum_paths(files)   # a folder (its .csv/.nc) or a list
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         (self.output_dir / 'plots').mkdir(exist_ok=True)
@@ -624,6 +626,8 @@ class PLFitter:
         self.peak_markers = []    # [{'x': float, 'line': Artist, 'text': Artist}]
         self.fit_lines   = []     # artists for the current fit overlay
         self.fit_result  = None   # most recent _fit_spectrum result dict
+        self._saved      = False  # has the current fit_result been saved?
+        self._states: dict[int, dict] = {}  # per-file snapshot for Back / revisits
         self.carry_peaks = False  # seed next file's markers from this file's peaks
         self.baseline = 'constant'  # 'constant' or 'linear'; persists across files
 
@@ -645,25 +649,28 @@ class PLFitter:
         self.erange = _EnergyRangeControl(ax_emin, ax_emax, on_change=self._apply_range,
                                           label_min='E min (eV) ', label_max='E max (eV) ')
 
-        ax_fitg  = self.fig.add_axes((0.03, 0.04, 0.16, 0.08))
-        ax_fitl  = self.fig.add_axes((0.21, 0.04, 0.17, 0.08))
-        ax_clear = self.fig.add_axes((0.40, 0.04, 0.14, 0.08))
-        ax_save  = self.fig.add_axes((0.56, 0.04, 0.10, 0.08))
-        ax_next  = self.fig.add_axes((0.68, 0.04, 0.10, 0.08))
+        ax_fitg  = self.fig.add_axes((0.02, 0.04, 0.14, 0.08))
+        ax_fitl  = self.fig.add_axes((0.17, 0.04, 0.15, 0.08))
+        ax_clear = self.fig.add_axes((0.33, 0.04, 0.12, 0.08))
+        ax_save  = self.fig.add_axes((0.46, 0.04, 0.09, 0.08))
+        ax_back  = self.fig.add_axes((0.56, 0.04, 0.10, 0.08))
+        ax_next  = self.fig.add_axes((0.67, 0.04, 0.10, 0.08))
 
         btn_fitg  = Button(ax_fitg,  'Fit Gaussian')
         btn_fitl  = Button(ax_fitl,  'Fit Lorentzian')
         btn_clear = Button(ax_clear, 'Clear Peaks')
         btn_save  = Button(ax_save,  'Save')
+        btn_back  = Button(ax_back,  '← Back')
         btn_next  = Button(ax_next,  'Next →')
 
         btn_fitg.on_clicked(lambda _: self._fit('gaussian'))
         btn_fitl.on_clicked(lambda _: self._fit('lorentzian'))
         btn_clear.on_clicked(self._clear_peaks)
         btn_save.on_clicked(self._save)
+        btn_back.on_clicked(self._back)
         btn_next.on_clicked(self._next)
 
-        ax_carry = self.fig.add_axes((0.80, 0.03, 0.18, 0.10))
+        ax_carry = self.fig.add_axes((0.79, 0.03, 0.19, 0.10))
         cb_carry = CheckButtons(ax_carry, ['Carry peaks\nto next file'], [self.carry_peaks])
         cb_carry.on_clicked(self._on_carry)
 
@@ -673,7 +680,7 @@ class PLFitter:
         self.btn_base.on_clicked(self._on_baseline)
 
         # Keep references so widgets aren't garbage-collected.
-        self._buttons = [btn_fitg, btn_fitl, btn_clear, btn_save, btn_next, cb_carry,
+        self._buttons = [btn_fitg, btn_fitl, btn_clear, btn_save, btn_back, btn_next, cb_carry,
                          *self.erange.widgets, self.btn_base]
 
         self.fig.canvas.mpl_connect('button_press_event', self._on_click)
@@ -685,10 +692,14 @@ class PLFitter:
     # Internal: file loading
     # ------------------------------------------------------------------
 
-    def _load_current(self, seed_peaks: list[float] | None = None):
+    def _load_current(self, seed_peaks: list[float] | None = None,
+                      state: dict | None = None):
+        """Load files[current_idx]. `state` (a snapshot from _stash_state) restores a
+        previously visited file; otherwise `seed_peaks` (carried peaks) are placed."""
         self.peak_markers.clear()
         self.fit_lines.clear()
         self.fit_result = None
+        self._saved = False
 
         filepath = self.files[self.current_idx]
         self.data = load_pl_data(filepath)
@@ -697,28 +708,57 @@ class PLFitter:
         # clamped in case this file covers less energy.
         self.erange.set_data_bounds(float(self.data.energy.min()),
                                     float(self.data.energy.max()))
+        if state is not None:
+            self.erange.set_range(*state['range'])
+            self.baseline = state['baseline']
+            self.btn_base.label.set_text(self._baseline_label())
 
         self.ax.cla()
         cropped = self._current_data()
         self._data_line, = self.ax.plot(cropped.energy.values, cropped.values,
                                         color='black', lw=1.2, label='Data')
         self._set_view()
+        self.ax.set_xlabel('Energy (eV)')
+        self.ax.set_ylabel('Intensity (arb. units)')
 
+        markers = state['markers'] if state is not None else (seed_peaks or [])
+        for x in markers:
+            self._add_peak(x)
+        if state is not None and state['fit_result'] is not None:
+            self.fit_result = state['fit_result']
+            self._saved = state['saved']
+            self._show_fit()
+        self._update_title()
+        self.fig.canvas.draw_idle()
+
+    def _update_title(self):
+        filepath = self.files[self.current_idx]
         sample = self.data.attrs.get('sample', '')
         spot   = self.data.attrs.get('spot', '')
         n, total = self.current_idx + 1, len(self.files)
+        if self.fit_result is None:
+            status = ''
+        else:
+            status = '   ✓ saved' if self._saved else '   (fit not saved)'
         self.ax.set_title(
-            f'[{n}/{total}]  {filepath.name}\n'
+            f'[{n}/{total}]  {filepath.name}{status}\n'
             f'{sample}  {spot}  —  '
             'left-click: place peak  |  right-click: remove peak',
             fontsize=9
         )
-        self.ax.set_xlabel('Energy (eV)')
-        self.ax.set_ylabel('Intensity (arb. units)')
 
-        for x in seed_peaks or []:
-            self._add_peak(x)
-        self.fig.canvas.draw_idle()
+    def _stash_state(self):
+        """Snapshot the current file so Back / revisiting restores it."""
+        self._states[self.current_idx] = {
+            'markers':    [m['x'] for m in self.peak_markers],
+            'fit_result': self.fit_result,
+            'saved':      self._saved,
+            'range':      (self.erange.emin, self.erange.emax),
+            'baseline':   self.baseline,
+        }
+        if self.fit_result is not None and not self._saved:
+            print(f"Note: fit for {self.files[self.current_idx].name} is not saved "
+                  f"(use ← Back to return to it).")
 
     def _on_carry(self, _label):
         self.carry_peaks = not self.carry_peaks
@@ -756,9 +796,11 @@ class PLFitter:
         # A fit (and its baseline) belongs to the old window, so drop it.
         self._clear_fit()
         self.fit_result = None
+        self._saved = False
         cropped = self._current_data()
         self._data_line.set_data(cropped.energy.values, cropped.values)
         self._set_view()
+        self._update_title()
         self.fig.canvas.draw_idle()
 
     # ------------------------------------------------------------------
@@ -823,7 +865,20 @@ class PLFitter:
             return
 
         self.fit_result = {**result, 'lineshape': lineshape}
+        self._saved = False
+        self._show_fit()
 
+        print(f"\nFit ({lineshape}):")
+        for j, peak in enumerate(result['peaks']):
+            print(f"  Peak {j+1}: E={peak['energy']:.4f} ± {peak['energy_err']:.2g} eV | "
+                  f"FWHM={peak['width']:.4f} ± {peak['width_err']:.2g} eV | "
+                  f"amp={peak['amplitude']:.1f} ± {peak['amplitude_err']:.2g} | "
+                  f"area={peak['area']:.4f} ± {peak['area_err']:.2g}")
+
+    def _show_fit(self):
+        """Draw self.fit_result: baseline-subtracted data plus the fit overlay."""
+        result = self.fit_result
+        assert result is not None
         self._clear_fit()
 
         # Show the data on the same baseline-subtracted scale the fit used.
@@ -835,14 +890,8 @@ class PLFitter:
 
         self.fit_lines.extend(_plot_fit_overlay(self.ax, result))
         self.ax.legend(fontsize=8)
+        self._update_title()
         self.fig.canvas.draw_idle()
-
-        print(f"\nFit ({lineshape}):")
-        for j, peak in enumerate(result['peaks']):
-            print(f"  Peak {j+1}: E={peak['energy']:.4f} ± {peak['energy_err']:.2g} eV | "
-                  f"FWHM={peak['width']:.4f} ± {peak['width_err']:.2g} eV | "
-                  f"amp={peak['amplitude']:.1f} ± {peak['amplitude_err']:.2g} | "
-                  f"area={peak['area']:.4f} ± {peak['area_err']:.2g}")
 
     # ------------------------------------------------------------------
     # Internal: save and navigation
@@ -905,7 +954,12 @@ class PLFitter:
                                  self.fit_result['lineshape'])
         print(f"Spectrum → {nc_path}")
 
+        self._saved = True
+        self._update_title()
+        self.fig.canvas.draw_idle()
+
     def _next(self, _event):
+        self._stash_state()
         if self.current_idx + 1 >= len(self.files):
             print("No more files — closing.")
             plt.close(self.fig)
@@ -919,7 +973,17 @@ class PLFitter:
 
         self.current_idx += 1
         self._clear_fit()
-        self._load_current(seed_peaks=seeds)
+        # A file visited before comes back as it was left; a new one gets carried peaks.
+        self._load_current(seed_peaks=seeds, state=self._states.get(self.current_idx))
+
+    def _back(self, _event):
+        if self.current_idx == 0:
+            print("Already at the first file.")
+            return
+        self._stash_state()
+        self.current_idx -= 1
+        self._clear_fit()
+        self._load_current(state=self._states.get(self.current_idx))
 
 
 # ---------------------------------------------------------------------------

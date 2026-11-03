@@ -4,14 +4,18 @@ Driver script for interactive PL fitting and cross-dataset comparison.
 INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
     python scripts/steady_state_driver.py --project MyExperiment
 
-    A file browser opens in the project's PL data directory — navigate to a
-    sweep (date) subfolder and select its CSV files (Ctrl+A for all).
+    A folder browser opens in the project's PL data directory — pick a sweep
+    (date) folder and every spectrum in it is queued, in filename order
+    (metadata.txt and other non-spectrum files are skipped). Add --pick-files
+    to choose individual files instead, or --files to skip the browser.
 
     Left-click the spectrum to place peak markers; right-click to remove one.
     E min / E max boxes set the fit window (persists across files; the
     toolbar zoom is view-only). "Baseline" button: constant or linear.
     "Carry peaks to next file" seeds the next spectrum's markers.
-    Buttons: Fit Gaussian | Fit Lorentzian | Clear Peaks | Save | Next →
+    Buttons: Fit Gaussian | Fit Lorentzian | Clear Peaks | Save | ← Back | Next →
+    Back (or Next onto a file already visited) restores that file's markers,
+    fit, range and baseline; the title shows whether the fit has been saved.
 
     Save writes, per spectrum:
       <processed_pl_dir>/fit_results.csv          one row per peak, with 1σ errors
@@ -73,7 +77,9 @@ if __name__ == "__main__":
     parser.add_argument('--project', required=True,
                         help="Project folder name.")
     parser.add_argument('--files', nargs='+', default=None,
-                        help="Explicit CSV paths, or a single directory — skips the browser")
+                        help="Explicit spectrum paths, or a single directory — skips the browser")
+    parser.add_argument('--pick-files', action='store_true',
+                        help="Fit mode: pick individual files instead of a whole folder")
     parser.add_argument('--mode', choices=['fit', 'contour-plot'], default='fit',
                         help='What type of processing to execute. Options: fit, contour-plot.')
     args = parser.parse_args()
@@ -94,12 +100,16 @@ if __name__ == "__main__":
     if args.mode == 'fit':
         if args.files:
             files = [Path(f) for f in args.files]
-        else:
+        elif args.pick_files:
             files = select_files(Path(cfg['pl_dir']))
             if not files:
                 raise SystemExit("No files selected.")
-        print(f"Opening fitter for {len(files)} file(s)...")
+        else:
+            files = select_directory(Path(cfg['pl_dir']))
+            if not files:
+                raise SystemExit("No directory selected.")
         fitter = PLFitter(files, output_dir=Path(cfg['processed_pl_dir']))
+        print(f"Opening fitter for {len(fitter.files)} file(s)...")
         fitter.run()
     
 
