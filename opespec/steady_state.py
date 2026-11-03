@@ -18,7 +18,7 @@ import pandas as pd
 import xarray as xr
 from pathlib import Path
 import matplotlib.pyplot as plt
-from scipy.optimize import minimize
+from scipy.optimize import least_squares
 from scipy.signal import savgol_filter as smooth
 from matplotlib.widgets import Button, TextBox, CheckButtons
 from matplotlib.transforms import Bbox
@@ -366,13 +366,22 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
     p0 = list(p0) + bl0
     bounds = list(bounds) + bl_bounds
 
-    fn, diff_fn = ff.LINESHAPES[lineshape]
+    fn, _ = ff.LINESHAPES[lineshape]
 
-    def objective(p):
-        return diff_fn(p[:-k], x, y - _eval_baseline(_baseline_from_params(baseline, p[-k:], xc), x))
+    # least_squares takes (lo, hi) arrays and needs lo < hi, so fixed parameters
+    # (equal bounds from generateParams_fixed) aren't supported here; PLFitter never fixes any.
+    lo = np.array([-np.inf if b[0] is None else b[0] for b in bounds], dtype=float)
+    hi = np.array([np.inf if b[1] is None else b[1] for b in bounds], dtype=float)
+    p0 = np.clip(np.asarray(p0, dtype=float), lo, hi)
+
+    def residuals(p):
+        return fn(p[:-k], x) + _eval_baseline(_baseline_from_params(baseline, p[-k:], xc), x) - y
 
     try:
-        result = minimize(objective, p0, bounds=bounds, method='L-BFGS-B')
+        # Residual-vector solver with Jacobian scaling: parameters span very different
+        # magnitudes (heights ~1e3, centers ~1 eV, widths ~1e-2), which made the old
+        # scalar L-BFGS-B fit stop well short of the minimum.
+        result = least_squares(residuals, p0, bounds=(lo, hi), x_scale='jac')
         bl = _baseline_from_params(baseline, result.x[-k:], xc)
         fit = result.x[:-k]
         y = y - _eval_baseline(bl, x)
