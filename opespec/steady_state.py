@@ -13,6 +13,7 @@ Key components:
 - process_pl_directory_gaussian/lorentzian: batch fitting helpers (older API)
 """
 
+import warnings
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -41,14 +42,15 @@ def load_pl_data(filepath: Path) -> xr.DataArray:
         wavelength = data['Wavelength'].values
         energy = 1239.8 / wavelength # type: ignore
         intensity = data['Intensity'].values
+        metadata = utilities.get_metadata(filepath)
 
         array = xr.DataArray(
             data=intensity,
             coords={'energy': energy},
             attrs={
                 'filename': filepath.name,
-                'sample': utilities.get_sample_name(filepath.name),
-                'spot': utilities.get_spot(filepath.name)
+                'sample': metadata['sample'],
+                'spot': metadata['spot']
             },
             name='intensity'
         )
@@ -83,7 +85,10 @@ def _load_bfield_map(files: Path | list[Path]) -> xr.DataArray:
     spectra = []
     for filepath in sorted(files):
         da = load_pl_data(filepath)
-        field = utilities.get_field(filepath)
+        field = utilities.get_metadata(filepath)['field']
+        if field is None:
+            warnings.warn(f"Could not parse magnetic field from filename or "
+                          f"{utilities.METADATA_FILENAME}: {filepath.name}")
         spectra.append(da.expand_dims(field=[field]))
 
     bfield_map = xr.concat(spectra, dim="field").sortby("field").sortby("energy")
@@ -514,6 +519,7 @@ class PLFitter:
 
         filepath = self.files[self.current_idx]
         da = self.data
+        metadata = utilities.get_metadata(filepath)
 
         rows = []
         for j, peak in enumerate(self.fit_result['peaks']):
@@ -521,8 +527,8 @@ class PLFitter:
                 'filename':    filepath.name,
                 'sample':      da.attrs.get('sample', ''),
                 'spot':        da.attrs.get('spot', ''),
-                'field':       utilities.get_field(filepath),
-                'temperature': utilities.get_temperature(filepath),
+                'field':       metadata['field'],
+                'temperature': metadata['temperature'],
                 'lineshape':   self.fit_result['lineshape'],
                 'peak_index':  j,
                 'energy':      peak['energy'],

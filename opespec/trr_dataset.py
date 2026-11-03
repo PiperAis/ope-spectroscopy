@@ -28,6 +28,7 @@ import pandas as pd
 import pathlib
 from pathlib import Path
 from scipy.optimize import curve_fit
+import warnings
 import xarray as xr
 
 xr.set_options(keep_attrs=True)
@@ -101,6 +102,19 @@ class TRRDataset:
         dataset = xr.Dataset(data_vars = {'raw' : array},
                             attrs = array.attrs)
 
+        # Resolve metadata here, while the full path (and so the folder's
+        # metadata.txt) is still available.
+        metadata = utilities.get_metadata(filepath)
+        bfield = metadata['field']
+        if bfield is None:
+            warnings.warn(f"Could not parse magnetic field from filename or "
+                          f"{utilities.METADATA_FILENAME}: {filepath.name}")
+            bfield = float(0)
+        dataset.attrs.update({'sample': metadata['sample'],
+                              'bfield': bfield,
+                              'sf': metadata['scale_factor'],
+                              'rzero': metadata['rzero']})
+
         return dataset
     
     @property
@@ -157,12 +171,17 @@ class TRRDataset:
         if 'data filename' in missing_attributes:
             raise NameError("Something went wrong when initially loading your dataset, the data filename did not get saved as an attr.")
         
-        if len(missing_attributes) > 0:
-            self._init_set_number()
-            self._init_bfield()
-            self._init_sample()
-            self._init_rzero()
-            self._init_sf()
+        # Only fill what's missing, so attrs set at load (e.g. from
+        # metadata.txt) aren't overwritten by filename parsing.
+        init_functions = {
+            'set number': self._init_set_number,
+            'bfield': self._init_bfield,
+            'sample': self._init_sample,
+            'rzero': self._init_rzero,
+            'sf': self._init_sf,
+        }
+        for attribute in missing_attributes:
+            init_functions[attribute]()
 
         return
 

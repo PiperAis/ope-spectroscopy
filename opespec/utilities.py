@@ -4,6 +4,9 @@ Shared helpers used across data types (TRR and steady-state).
 - load_config: read a project config.yaml and resolve all relative paths
 - Filename parsers: get_field, get_temperature, get_sample_name, get_spot,
   get_scale_factor, get_rzero
+- get_metadata: merges filename parsers with an optional folder-level
+  metadata.txt (key: value lines) for parameters constant across a folder.
+  Filename values win; a conflict raises a warning.
 - File helpers: select_files, get_file_paths, get_file_names
 
 Keep this data-type-agnostic — anything specific to one measurement type
@@ -11,6 +14,7 @@ belongs in that type's module. Filename format:
 ##-flake[sample]-[temp]K-[bfield]T-[scale]SF-[R0]mV-[tokens].
 """
 
+from functools import lru_cache
 from pathlib import Path
 import re
 import warnings
@@ -154,9 +158,9 @@ def get_field(filename : str | Path) -> float | None:
         warnings.warn(f"Could not parse magnetic field from filename: {filename}")
         return None
 
-def get_sample_name(filename : str | Path) -> str:
-    """ Gets sample name from data filename, returning 'unnamed
-    sample' if not found. 
+def get_sample_name(filename : str | Path, default='unnamed sample') -> str:
+    """ Gets sample name from data filename, returning default
+    ('unnamed sample') if not found.
     """
     # Search for the regex pattern denoting flake name
     match = re.search(r'flake.*-', str(filename))
@@ -169,12 +173,12 @@ def get_sample_name(filename : str | Path) -> str:
         sample_name = sample_name.replace('flake', 'Flake ')
         return sample_name
     else:
-        return 'unnamed sample'
+        return default
 
-def get_scale_factor(filename : str | Path) -> int:
-    """ 
-    Gets scale factor from data filename and returns it as an int. 
-    Returns 1 if pattern is not found. 
+def get_scale_factor(filename : str | Path, default=1) -> int:
+    """
+    Gets scale factor from data filename and returns it as an int.
+    Returns default (1) if pattern is not found.
     """
     # Search for regex pattern denoting scale factor
     match = re.search(r'-\d+kSF', str(filename))
@@ -188,12 +192,12 @@ def get_scale_factor(filename : str | Path) -> int:
         scale_factor = int(scale_factor)
         return scale_factor
     else:
-        return 1
+        return default
 
-def get_rzero(filename : str | Path) -> float:
-    """ 
-    Gets r_0 from data filename and returns it as a float. Returns 1 if 
-    pattern is not found. 
+def get_rzero(filename : str | Path, default=1) -> float:
+    """
+    Gets r_0 from data filename and returns it as a float. Returns
+    default (1) if pattern is not found.
     """
     # Search for regex pattern denoting r_0
     match = re.search(r'-\d+p?(\d+)?mV', str(filename))
@@ -207,9 +211,9 @@ def get_rzero(filename : str | Path) -> float:
         rzero = float(rzero)
         return rzero
     else:
-        return 1
-    
-def get_spot(filename: str) -> str:
+        return default
+
+def get_spot(filename: str, default='unknown spot') -> str:
     """
     Gets spot from filename.
     Assumes pattern like '-spot1-' after sample.
@@ -219,7 +223,7 @@ def get_spot(filename: str) -> str:
         spot = spot_match.group(0)
         spot = spot.replace('-', '').replace('spot', 'Spot ')
         return spot
-    return 'unknown spot'
+    return default
 
 def get_temperature(filename: str | Path) -> float | None:
     """
@@ -230,6 +234,68 @@ def get_temperature(filename: str | Path) -> float | None:
     if match:
         return float(match.group(1).replace('p', '.'))
     return None
+
+#----Folder metadata----#
+
+METADATA_FILENAME = 'metadata.txt'
+
+# Defaults applied when neither the filename nor metadata.txt gives a value.
+_METADATA_DEFAULTS = {
+    'sample': 'unnamed sample',
+    'spot': 'unknown spot',
+    'field': None,
+    'temperature': None,
+    'scale_factor': 1,
+    'rzero': 1,
+}
+
+@lru_cache
+def _read_folder_metadata(folder: Path) -> dict:
+    """Read folder/metadata.txt (key: value lines) once per folder; {} if absent."""
+    path = folder / METADATA_FILENAME
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        metadata = yaml.safe_load(f) or {}
+    if not isinstance(metadata, dict):
+        raise ValueError(f"{path} must contain 'key: value' lines.")
+    return metadata
+
+def get_metadata(filepath: str | Path) -> dict:
+    """
+    Merged metadata for a data file. Values parsed from the filename
+    override those in metadata.txt in the file's folder (warning on
+    conflict). Keys: sample, spot, field, temperature, scale_factor,
+    rzero, plus any extra keys from metadata.txt.
+    """
+    filepath = Path(filepath)
+    name = filepath.name
+    folder_metadata = _read_folder_metadata(filepath.parent.resolve())
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        field = get_field(name)
+    from_filename = {
+        'sample': get_sample_name(name, default=None),
+        'spot': get_spot(name, default=None),
+        'field': field,
+        'temperature': get_temperature(name),
+        'scale_factor': get_scale_factor(name, default=None),
+        'rzero': get_rzero(name, default=None),
+    }
+
+    metadata = dict(folder_metadata)
+    for key, value in from_filename.items():
+        folder_value = folder_metadata.get(key)
+        if value is not None:
+            if folder_value is not None and folder_value != value:
+                warnings.warn(f"{name}: filename {key}={value!r} overrides "
+                              f"{METADATA_FILENAME} {key}={folder_value!r}")
+            metadata[key] = value
+        elif folder_value is None:
+            metadata[key] = _METADATA_DEFAULTS[key]
+
+    return metadata
 
 def get_file_names(dir : Path, 
                     condition : str = ''
