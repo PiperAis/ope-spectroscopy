@@ -23,6 +23,9 @@ from scipy.optimize import minimize
 from scipy.signal import savgol_filter as smooth
 from matplotlib.widgets import Button, TextBox, CheckButtons
 from matplotlib.transforms import Bbox
+from matplotlib.figure import Figure
+from matplotlib.axes import Axes
+from matplotlib.colorbar import Colorbar
 from . import fitting_functions as ff
 from . import utilities
 
@@ -123,9 +126,9 @@ class BfieldContourBuilder:
         self.emin = float(self.data.energy.min())
         self.emax = float(self.data.energy.max())
 
-        self.fig = None
-        self.ax = None
-        self._cbar = None
+        self.fig: Figure  # created in run()
+        self.ax: Axes
+        self._cbar: Colorbar | None = None
 
     def run(self):
         self.fig = plt.figure(figsize=(9, 9), layout="constrained")
@@ -220,8 +223,9 @@ class BfieldContourBuilder:
         out_path = self.output_dir / f"{sample.replace(' ', '')}_bfield_contour.png"
 
         self.fig.canvas.draw()
-        renderer = self.fig.canvas.get_renderer()
-        bbox = Bbox.union([
+        renderer = self.fig.canvas.get_renderer()  # pyright: ignore[reportAttributeAccessIssue]
+        assert self._cbar is not None
+        bbox = Bbox.union([  # pyright: ignore[reportArgumentType]
             self.ax.get_tightbbox(renderer),
             self._cbar.ax.get_tightbbox(renderer),
         ]).transformed(self.fig.dpi_scale_trans.inverted())
@@ -244,7 +248,7 @@ def plot_multiple_together(directory: Path) -> None:
             da_masked = data_array.where(maskcondition, drop=True)
             x = da_masked.energy.values
             y = da_masked.values
-            y = smooth(y, 15, 3)
+            y = np.asarray(smooth(y, 15, 3))
             plt.plot(x, y, label=f'{labellist[i]}')
             i += 1
     plt.legend()
@@ -259,7 +263,7 @@ def _safe_smooth(y, window=11, poly=3):
         window -= 1
     if window <= poly:
         return y
-    return smooth(y, window, poly)
+    return np.asarray(smooth(y, window, poly))
 
 
 def _fit_spectrum(data: xr.DataArray, peak_positions: list,
@@ -350,13 +354,13 @@ class PLFitter:
         (self.output_dir / 'plots').mkdir(exist_ok=True)
 
         self.current_idx = 0
-        self.data        = None   # current xr.DataArray
+        self.data: xr.DataArray   # current spectrum; set in _load_current()
         self.peak_markers = []    # [{'x': float, 'line': Artist, 'text': Artist}]
         self.fit_lines   = []     # artists for the current fit overlay
         self.fit_result  = None   # most recent _fit_spectrum result dict
 
-        self.fig = None
-        self.ax  = None
+        self.fig: Figure  # created in run()
+        self.ax: Axes
 
     def run(self):
         if not self.files:
@@ -364,13 +368,13 @@ class PLFitter:
             return
 
         self.fig = plt.figure(figsize=(10, 7))
-        self.ax  = self.fig.add_axes([0.10, 0.18, 0.87, 0.77])
+        self.ax  = self.fig.add_axes((0.10, 0.18, 0.87, 0.77))
 
-        ax_fitg  = self.fig.add_axes([0.03, 0.04, 0.16, 0.08])
-        ax_fitl  = self.fig.add_axes([0.21, 0.04, 0.17, 0.08])
-        ax_clear = self.fig.add_axes([0.40, 0.04, 0.14, 0.08])
-        ax_save  = self.fig.add_axes([0.56, 0.04, 0.10, 0.08])
-        ax_next  = self.fig.add_axes([0.68, 0.04, 0.10, 0.08])
+        ax_fitg  = self.fig.add_axes((0.03, 0.04, 0.16, 0.08))
+        ax_fitl  = self.fig.add_axes((0.21, 0.04, 0.17, 0.08))
+        ax_clear = self.fig.add_axes((0.40, 0.04, 0.14, 0.08))
+        ax_save  = self.fig.add_axes((0.56, 0.04, 0.10, 0.08))
+        ax_next  = self.fig.add_axes((0.68, 0.04, 0.10, 0.08))
 
         btn_fitg  = Button(ax_fitg,  'Fit Gaussian')
         btn_fitl  = Button(ax_fitl,  'Fit Lorentzian')
@@ -486,7 +490,7 @@ class PLFitter:
 
         self._clear_fit()
 
-        colors = plt.cm.tab10.colors
+        colors = plt.cm.tab10.colors  # pyright: ignore[reportAttributeAccessIssue]
         total_line, = self.ax.plot(result['x_fit'], result['y_total'],
                                    color='red', lw=1.5, label='Total fit')
         self.fit_lines.append(total_line)
@@ -551,7 +555,7 @@ class PLFitter:
         y_display = _safe_smooth(y_display)
         y_display -= y_display.min()
 
-        colors = plt.cm.tab10.colors
+        colors = plt.cm.tab10.colors  # pyright: ignore[reportAttributeAccessIssue]
         fig_save, ax_save = plt.subplots(figsize=(8, 5))
         ax_save.plot(x_fit, y_display, color='black', lw=1.2, label='Data')
         ax_save.plot(x_fit, self.fit_result['y_total'],
