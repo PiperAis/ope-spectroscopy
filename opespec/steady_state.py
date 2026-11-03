@@ -26,6 +26,7 @@ from matplotlib.transforms import Bbox
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from matplotlib.colorbar import Colorbar
+from matplotlib.lines import Line2D
 from . import fitting_functions as ff
 from . import utilities
 
@@ -60,14 +61,6 @@ def load_pl_data(filepath: Path) -> xr.DataArray:
         array.energy.attrs['units'] = 'eV'
 
     return array
-
-
-def _subtract_offset(data_array : xr.DataArray):
-
-    minimum_value = data_array.values.min()
-    subtracted_array = data_array - minimum_value
-
-    return subtracted_array
 
 
 def _load_bfield_map(files: Path | list[Path]) -> xr.DataArray:
@@ -257,50 +250,76 @@ def plot_multiple_together(directory: Path) -> None:
     plt.show()
 
 
-def _safe_smooth(y, window=11, poly=3):
-    window = min(window, len(y))
-    if window % 2 == 0:
-        window -= 1
-    if window <= poly:
-        return y
-    return np.asarray(smooth(y, window, poly))
+def _eval_baseline(bl: dict, x):
+    """Evaluate a fitted baseline b(x) = c0 + c1·(x − xc)."""
+    return bl['c0'] + bl['c1'] * (np.asarray(x) - bl['xc'])
 
 
 def _fit_spectrum(data: xr.DataArray, peak_positions: list,
-                  lineshape: str, energy_range: tuple) -> dict | None:
+                  lineshape: str, energy_range: tuple,
+                  baseline: str = 'constant') -> dict | None:
     """
     Fit N peaks to the spectrum within energy_range using clicked peak positions
     as initial guesses. Returns a result dict or None on failure.
 
     lineshape: 'gaussian' or 'lorentzian'
-    energy_range: (xmin, xmax) in eV — typically the current axes zoom window.
+    energy_range: (xmin, xmax) in eV — the E min/E max range set in the GUI.
+    baseline: 'constant' or 'linear' — fit jointly with the peaks as
+              b(x) = c0 [+ c1·(x − xc)], xc = window center.
     """
     xmin, xmax = energy_range
     mask = (data.energy >= xmin) & (data.energy <= xmax)
     da = data.where(mask, drop=True)
 
     if len(da) < 5:
-        print("Too few data points in the current zoom window.")
+        print("Too few data points in the E min/E max range.")
         return None
 
     x = da.energy.values.astype(float)
     y = da.values.astype(float)
 
-    # Initial amplitude: look up smoothed value at each clicked position.
+    # Baseline is fit as extra parameter(s) alongside the peaks.
+    # Initial guess from the medians of the window's edge regions (robust to noise).
+    xc = 0.5 * (float(x.min()) + float(x.max()))
+    edge = max(1, len(y) // 10)
+    xa, ya = float(np.mean(x[:edge])), float(np.median(y[:edge]))
+    xb, yb = float(np.mean(x[-edge:])), float(np.median(y[-edge:]))
+    if baseline == 'linear':
+        c1 = (yb - ya) / (xb - xa) if xb != xa else 0.0
+        c0 = ya + c1 * (xc - xa)
+        bl0, bl_bounds = [c0, c1], [(float(y.min()), float(y.max())), (None, None)]
+    else:
+        c0 = float(np.median(np.concatenate([y[:edge], y[-edge:]])))
+        bl0, bl_bounds = [c0], [(float(y.min()), float(y.max()))]
+    k = len(bl0)
+
+    def baseline_of(bp, xx):
+        return bp[0] + (bp[1] * (xx - xc) if k == 2 else 0.0)
+
+    # Initial amplitude: data value above the baseline guess at each clicked position.
     inputamps = []
     for pos in peak_positions:
         idx = int(np.argmin(np.abs(x - pos)))
-        inputamps.append(max(float(y[idx]), 1.0))
+        inputamps.append(max(float(y[idx] - baseline_of(bl0, x[idx])), 1.0))
 
     inputwids = [0.01] * len(peak_positions)
     p0, bounds = ff.generateParams_fixed(peak_positions, inputamps, inputwids)
+    p0 = list(p0) + bl0
+    bounds = list(bounds) + bl_bounds
 
     diff_fn = ff.diffG if lineshape == 'gaussian' else ff.diffL
     fn      = ff.Gaussian if lineshape == 'gaussian' else ff.Lorentz
 
+    def objective(p):
+        return diff_fn(p[:-k], x, y - baseline_of(p[-k:], x))
+
     try:
-        result = minimize(diff_fn, p0, args=(x, y), bounds=bounds, method='L-BFGS-B')
-        fit = result.x
+        result = minimize(objective, p0, bounds=bounds, method='L-BFGS-B')
+        bp = result.x[-k:]
+        bl = {'type': baseline, 'c0': float(bp[0]),
+              'c1': float(bp[1]) if k == 2 else 0.0, 'xc': xc}
+        fit = result.x[:-k]
+        y = y - _eval_baseline(bl, x)
 
         peaks = []
         for j in range(len(peak_positions)):
@@ -320,7 +339,8 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
                 'y':         fn(fit[3*j:3*(j+1)], x),
             })
 
-        return {'peaks': peaks, 'x_fit': x, 'y_total': fn(fit, x)}
+        return {'peaks': peaks, 'x_fit': x, 'y_total': fn(fit, x),
+                'y_data': y, 'baseline': bl}
 
     except Exception as e:
         print(f"Fit error: {e}")
@@ -333,6 +353,8 @@ class PLFitter:
 
     Left-click on the spectrum to place a peak marker.
     Right-click on a marker to remove it.
+    Set the fit window with the E min / E max boxes (persists across files;
+    toolbar zoom is view-only and does not affect the fit).
     Use the buttons to fit, save, and advance through files.
 
     IMPORTANT: Must be run as a plain script, not in a VS Code interactive
@@ -358,9 +380,15 @@ class PLFitter:
         self.peak_markers = []    # [{'x': float, 'line': Artist, 'text': Artist}]
         self.fit_lines   = []     # artists for the current fit overlay
         self.fit_result  = None   # most recent _fit_spectrum result dict
+        self.carry_peaks = False  # seed next file's markers from this file's peaks
+        self.baseline = 'constant'  # 'constant' or 'linear'; persists across files
+        self.emin: float | None = None  # fit/display range; None -> first file's full range
+        self.emax: float | None = None
+        self._syncing = False  # True while E boxes are being set programmatically
 
         self.fig: Figure  # created in run()
         self.ax: Axes
+        self._data_line: Line2D
 
     def run(self):
         if not self.files:
@@ -368,7 +396,14 @@ class PLFitter:
             return
 
         self.fig = plt.figure(figsize=(10, 7))
-        self.ax  = self.fig.add_axes((0.10, 0.18, 0.87, 0.77))
+        self.ax  = self.fig.add_axes((0.10, 0.25, 0.87, 0.68))
+
+        ax_emin = self.fig.add_axes((0.14, 0.135, 0.12, 0.05))
+        ax_emax = self.fig.add_axes((0.40, 0.135, 0.12, 0.05))
+        self.tb_emin = TextBox(ax_emin, 'E min (eV) ')
+        self.tb_emax = TextBox(ax_emax, 'E max (eV) ')
+        self.tb_emin.on_submit(self._on_emin)
+        self.tb_emax.on_submit(self._on_emax)
 
         ax_fitg  = self.fig.add_axes((0.03, 0.04, 0.16, 0.08))
         ax_fitl  = self.fig.add_axes((0.21, 0.04, 0.17, 0.08))
@@ -388,8 +423,18 @@ class PLFitter:
         btn_save.on_clicked(self._save)
         btn_next.on_clicked(self._next)
 
-        # Keep references so buttons aren't garbage-collected.
-        self._buttons = [btn_fitg, btn_fitl, btn_clear, btn_save, btn_next]
+        ax_carry = self.fig.add_axes((0.80, 0.03, 0.18, 0.10))
+        cb_carry = CheckButtons(ax_carry, ['Carry peaks\nto next file'], [self.carry_peaks])
+        cb_carry.on_clicked(self._on_carry)
+
+        # Same row/height as the E boxes, so it can't overlap the button row.
+        ax_base = self.fig.add_axes((0.62, 0.135, 0.22, 0.05))
+        self.btn_base = Button(ax_base, self._baseline_label())
+        self.btn_base.on_clicked(self._on_baseline)
+
+        # Keep references so widgets aren't garbage-collected.
+        self._buttons = [btn_fitg, btn_fitl, btn_clear, btn_save, btn_next, cb_carry,
+                         self.tb_emin, self.tb_emax, self.btn_base]
 
         self.fig.canvas.mpl_connect('button_press_event', self._on_click)
 
@@ -400,7 +445,7 @@ class PLFitter:
     # Internal: file loading
     # ------------------------------------------------------------------
 
-    def _load_current(self):
+    def _load_current(self, seed_peaks: list[float] | None = None):
         self.peak_markers.clear()
         self.fit_lines.clear()
         self.fit_result = None
@@ -408,9 +453,22 @@ class PLFitter:
         filepath = self.files[self.current_idx]
         self.data = load_pl_data(filepath)
 
+        # First file: full data range. Later files: keep the previous range,
+        # clamped in case this file covers less energy.
+        lo, hi = self._data_bounds()
+        if self.emin is None or self.emax is None:
+            self.emin, self.emax = lo, hi
+        else:
+            self.emin = float(np.clip(self.emin, lo, hi))
+            self.emax = float(np.clip(self.emax, lo, hi))
+        self._set_box(self.tb_emin, self.emin)
+        self._set_box(self.tb_emax, self.emax)
+
         self.ax.cla()
-        self.ax.plot(self.data.energy.values, self.data.values,
-                     color='black', lw=1.2, label='Data')
+        cropped = self._current_data()
+        self._data_line, = self.ax.plot(cropped.energy.values, cropped.values,
+                                        color='black', lw=1.2, label='Data')
+        self._set_view()
 
         sample = self.data.attrs.get('sample', '')
         spot   = self.data.attrs.get('spot', '')
@@ -423,7 +481,98 @@ class PLFitter:
         )
         self.ax.set_xlabel('Energy (eV)')
         self.ax.set_ylabel('Intensity (arb. units)')
+
+        for x in seed_peaks or []:
+            self._add_peak(x)
         self.fig.canvas.draw_idle()
+
+    def _on_carry(self, _label):
+        self.carry_peaks = not self.carry_peaks
+
+    _BASELINES = ('constant', 'linear')
+
+    def _baseline_label(self) -> str:
+        return f"Baseline: {self.baseline.capitalize()} ▾"
+
+    def _on_baseline(self, _event):
+        # Cycle to the next baseline type and relabel the button.
+        i = self._BASELINES.index(self.baseline)
+        self.baseline = self._BASELINES[(i + 1) % len(self._BASELINES)]
+        self.btn_base.label.set_text(self._baseline_label())
+        self.fig.canvas.draw_idle()
+        # If a fit is showing, refit with the new baseline so the two can be compared.
+        if self.fit_result is not None:
+            self._fit(self.fit_result['lineshape'])
+
+    # ------------------------------------------------------------------
+    # Internal: energy range
+    # ------------------------------------------------------------------
+
+    def _fit_range(self) -> tuple[float, float]:
+        assert self.emin is not None and self.emax is not None
+        lo, hi = sorted((self.emin, self.emax))
+        return lo, hi
+
+    def _current_data(self) -> xr.DataArray:
+        # sortby: wavelength-ordered CSVs give descending energy, which breaks slice().
+        lo, hi = self._fit_range()
+        return self.data.sortby('energy').sel(energy=slice(lo, hi))
+
+    def _set_view(self):
+        # Explicit xlim so peak markers outside the range don't widen autoscale.
+        self.ax.set_xlim(*self._fit_range())
+        self.ax.relim()
+        self.ax.autoscale_view(scalex=False)
+
+    def _apply_range(self):
+        # A fit (and its baseline) belongs to the old window, so drop it.
+        self._clear_fit()
+        self.fit_result = None
+        cropped = self._current_data()
+        self._data_line.set_data(cropped.energy.values, cropped.values)
+        self._set_view()
+        self.fig.canvas.draw_idle()
+
+    def _data_bounds(self) -> tuple[float, float]:
+        return float(self.data.energy.min()), float(self.data.energy.max())
+
+    def _set_box(self, tb: TextBox, value: float):
+        # Programmatic text update; suppress the on_submit callback it triggers.
+        self._syncing = True
+        try:
+            tb.set_val(f"{value:.4f}")
+        finally:
+            self._syncing = False
+
+    def _parse_bound(self, text: str, tb: TextBox, name: str) -> float | None:
+        """Parse a typed bound and clamp it to the data's energy range."""
+        if self._syncing:
+            return None
+        try:
+            value = float(text)
+        except ValueError:
+            print(f"Invalid energy value: {text!r}")
+            return None
+        lo, hi = self._data_bounds()
+        clamped = float(np.clip(value, lo, hi))
+        if clamped != value:
+            print(f"{name} clamped to data edge: {clamped:.4f}")
+            self._set_box(tb, clamped)
+        return clamped
+
+    def _on_emin(self, text):
+        value = self._parse_bound(text, self.tb_emin, 'E min')
+        if value is None or value == self.emin:
+            return
+        self.emin = value
+        self._apply_range()
+
+    def _on_emax(self, text):
+        value = self._parse_bound(text, self.tb_emax, 'E max')
+        if value is None or value == self.emax:
+            return
+        self.emax = value
+        self._apply_range()
 
     # ------------------------------------------------------------------
     # Internal: click handling
@@ -479,16 +628,22 @@ class PLFitter:
             return
 
         peak_positions = sorted(m['x'] for m in self.peak_markers)
-        xmin, xmax = self.ax.get_xlim()
-
-        result = _fit_spectrum(self.data, peak_positions, lineshape, (xmin, xmax))
+        result = _fit_spectrum(self.data, peak_positions, lineshape, self._fit_range(),
+                               baseline=self.baseline)
         if result is None:
-            print("Fit failed — try adjusting peak positions or zoom window.")
+            print("Fit failed — try adjusting peak positions or the E min/E max range.")
             return
 
         self.fit_result = {**result, 'lineshape': lineshape}
 
         self._clear_fit()
+
+        # Show the data on the same baseline-subtracted scale the fit used.
+        # Always computed from raw self.data, so refits don't stack baselines.
+        cropped = self._current_data()
+        self._data_line.set_ydata(
+            cropped.values - _eval_baseline(result['baseline'], cropped.energy.values))
+        self._set_view()
 
         colors = plt.cm.tab10.colors  # pyright: ignore[reportAttributeAccessIssue]
         total_line, = self.ax.plot(result['x_fit'], result['y_total'],
@@ -534,6 +689,7 @@ class PLFitter:
                 'field':       metadata['field'],
                 'temperature': metadata['temperature'],
                 'lineshape':   self.fit_result['lineshape'],
+                'baseline':    self.fit_result['baseline']['type'],
                 'peak_index':  j,
                 'energy':      peak['energy'],
                 'width':       peak['width'],
@@ -547,13 +703,9 @@ class PLFitter:
         print(f"Saved {len(rows)} peak(s) → {csv_path}")
 
         # Build a clean figure: no buttons, no peak markers.
-        # Reconstruct the processed data (smoothed + baseline-subtracted) that
-        # was actually fit, so data and overlay are on the same vertical scale.
+        # Plot exactly the (baseline-subtracted) data that was fit.
         x_fit = self.fit_result['x_fit']
-        mask = (da.energy >= x_fit.min()) & (da.energy <= x_fit.max())
-        y_display = da.where(mask, drop=True).values.astype(float)
-        y_display = _safe_smooth(y_display)
-        y_display -= y_display.min()
+        y_display = self.fit_result['y_data']
 
         colors = plt.cm.tab10.colors  # pyright: ignore[reportAttributeAccessIssue]
         fig_save, ax_save = plt.subplots(figsize=(8, 5))
@@ -564,7 +716,7 @@ class PLFitter:
             ax_save.plot(x_fit, peak['y'], linestyle='--',
                          color=colors[j % 10], lw=1.2,
                          label=f"Peak {j+1}: {peak['energy']:.4f} eV")
-        ax_save.set_title(f"{filepath.name} fit")
+        ax_save.set_title(f"{filepath.name} fit ({self.fit_result['baseline']['type']} baseline)")
         ax_save.set_xlabel('Energy (eV)')
         ax_save.set_ylabel('Intensity (arb. units)')
         ax_save.legend(fontsize=8)
@@ -580,9 +732,16 @@ class PLFitter:
             print("No more files — closing.")
             plt.close(self.fig)
             return
+        seeds = None
+        if self.carry_peaks:
+            if self.fit_result is not None:
+                seeds = [p['energy'] for p in self.fit_result['peaks']]
+            else:
+                seeds = [m['x'] for m in self.peak_markers]
+
         self.current_idx += 1
         self._clear_fit()
-        self._load_current()
+        self._load_current(seed_peaks=seeds)
 
 
 # ---------------------------------------------------------------------------
