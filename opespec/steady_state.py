@@ -384,28 +384,62 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
         result = least_squares(residuals, p0, bounds=(lo, hi), x_scale='jac')
         bl = _baseline_from_params(baseline, result.x[-k:], xc)
         fit = result.x[:-k]
-        y = y - _eval_baseline(bl, x)
+        y_sub = y - _eval_baseline(bl, x)   # new name: `y` stays the raw data residuals() uses
+
+        # 1σ uncertainties from the Jacobian (residual variance estimated from the fit).
+        cov = ff.param_covariance(result.jac, result.fun)
+        err = np.sqrt(np.clip(np.diag(cov), 0, None))
 
         peaks = []
         for j in range(len(peak_positions)):
-            amp    = abs(float(fit[3*j]))
-            energy = float(fit[3*j + 1])
-            width  = abs(float(fit[3*j + 2]))
+            ia, ie, iw = 3*j, 3*j + 1, 3*j + 2
+            amp    = abs(float(fit[ia]))
+            energy = float(fit[ie])
+            width  = abs(float(fit[iw]))
             area   = ff.peak_area(lineshape, amp, width)
+            # area ∝ amp·width for both lineshapes → propagate with the amp–width covariance.
+            rel_var = ((err[ia] / amp) ** 2 + (err[iw] / width) ** 2
+                       + 2 * cov[ia, iw] / (amp * width)) if amp > 0 and width > 0 else np.nan
+            area_err = area * float(np.sqrt(max(rel_var, 0.0)))
+            # Stored unrounded (energy uncertainty can be ~1e-5 eV); round only for display.
             peaks.append({
-                'energy':    round(energy, 4),
-                'width':     round(width, 4),
-                'amplitude': round(amp, 2),
-                'area':      round(area, 4),
-                'y':         fn(fit[3*j:3*(j+1)], x),
+                'energy':        energy,
+                'energy_err':    float(err[ie]),
+                'width':         width,
+                'width_err':     float(err[iw]),
+                'amplitude':     amp,
+                'amplitude_err': float(err[ia]),
+                'area':          float(area),
+                'area_err':      area_err,
+                'y':             fn(fit[3*j:3*(j+1)], x),
             })
 
         return {'peaks': peaks, 'x_fit': x, 'y_total': fn(fit, x),
-                'y_data': y, 'baseline': bl}
+                'y_data': y_sub, 'baseline': bl}
 
     except Exception as e:
         print(f"Fit error: {e}")
         return None
+
+
+def _append_rows_csv(csv_path: Path, df: pd.DataFrame):
+    """
+    Append rows to a CSV. If the existing file has different columns (an older
+    schema), merge by column name and rewrite it rather than appending rows that
+    don't line up with the header; columns missing on either side become blank.
+    """
+    if not csv_path.exists():
+        df.to_csv(csv_path, index=False)
+        return
+    existing_cols = list(pd.read_csv(csv_path, nrows=0).columns)
+    if existing_cols == list(df.columns):
+        df.to_csv(csv_path, mode='a', header=False, index=False)
+        return
+    merged = pd.concat([pd.read_csv(csv_path), df], ignore_index=True)
+    merged = merged[list(df.columns) + [c for c in merged.columns if c not in df.columns]]
+    merged.to_csv(csv_path, index=False)
+    print(f"Note: {csv_path.name} had an older column layout; merged and rewrote it "
+          f"(older rows have blank values in new columns).")
 
 
 def _plot_fit_overlay(ax: Axes, result: dict) -> list:
@@ -669,9 +703,10 @@ class PLFitter:
 
         print(f"\nFit ({lineshape}):")
         for j, peak in enumerate(result['peaks']):
-            print(f"  Peak {j+1}: E={peak['energy']:.4f} eV | "
-                  f"FWHM={peak['width']:.4f} eV | "
-                  f"amp={peak['amplitude']:.1f} | area={peak['area']:.4f}")
+            print(f"  Peak {j+1}: E={peak['energy']:.4f} ± {peak['energy_err']:.2g} eV | "
+                  f"FWHM={peak['width']:.4f} ± {peak['width_err']:.2g} eV | "
+                  f"amp={peak['amplitude']:.1f} ± {peak['amplitude_err']:.2g} | "
+                  f"area={peak['area']:.4f} ± {peak['area_err']:.2g}")
 
     # ------------------------------------------------------------------
     # Internal: save and navigation
@@ -696,15 +731,18 @@ class PLFitter:
                 'lineshape':   self.fit_result['lineshape'],
                 'baseline':    self.fit_result['baseline']['type'],
                 'peak_index':  j,
-                'energy':      peak['energy'],
-                'width':       peak['width'],
-                'amplitude':   peak['amplitude'],
-                'area':        peak['area'],
+                'energy':        peak['energy'],
+                'energy_err':    peak['energy_err'],
+                'width':         peak['width'],
+                'width_err':     peak['width_err'],
+                'amplitude':     peak['amplitude'],
+                'amplitude_err': peak['amplitude_err'],
+                'area':          peak['area'],
+                'area_err':      peak['area_err'],
             })
 
         csv_path = self.output_dir / 'fit_results.csv'
-        df = pd.DataFrame(rows)
-        df.to_csv(csv_path, mode='a', header=not csv_path.exists(), index=False)
+        _append_rows_csv(csv_path, pd.DataFrame(rows))
         print(f"Saved {len(rows)} peak(s) → {csv_path}")
 
         # Build a clean figure: no buttons, no peak markers.

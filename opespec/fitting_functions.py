@@ -85,6 +85,25 @@ def diffL(p : list, x, y, N=None):
     difference = np.sum((y - Lorentz(p, x, N))**2)
     return difference
 
+def param_covariance(jac, resid) -> np.ndarray:
+    """
+    Parameter covariance from a least-squares solution: cov = (JᵀJ)⁺ · SSE/(N − p),
+    i.e. residual variance estimated from the fit itself (as scipy's curve_fit does).
+    Columns of J are normalized before inverting: parameters on very different
+    scales (e.g. heights ~1e3 vs centers ~1) otherwise make JᵀJ look singular and the
+    pseudo-inverse silently drops real (large) uncertainty along correlated directions.
+    Returns NaNs if there are no degrees of freedom.
+    """
+    jac = np.asarray(jac, dtype=float)
+    n, p = jac.shape
+    if n <= p:
+        return np.full((p, p), np.nan)
+    s2 = float(np.sum(np.asarray(resid) ** 2)) / (n - p)
+    d = np.linalg.norm(jac, axis=0)
+    d[d == 0] = 1.0
+    js = jac / d
+    return np.linalg.pinv(js.T @ js) / np.outer(d, d) * s2
+
 # lineshape name -> (model function, sum-of-squares objective)
 LINESHAPES = {
     'gaussian':   (Gaussian, diffG),
