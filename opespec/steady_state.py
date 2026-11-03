@@ -31,16 +31,32 @@ from . import utilities
 
 xr.set_options(keep_attrs=True)
 
-def load_pl_data(filepath: Path) -> xr.DataArray:
+def load_pl_data(filepath: Path, variable: str = 'raw') -> xr.DataArray:
     """
-    Loads PL CSV data into xarray DataArray.
-    Assumes columns: Wavelength, Intensity.
-    Converts wavelength to energy in eV. Returned sorted by ascending energy
-    (wavelength-ordered CSVs would otherwise give descending energy).
+    Loads one PL spectrum into an xarray DataArray (energy coords, ascending).
+
+    CSV (raw data): columns Wavelength, Intensity; wavelength converted to eV.
+    Only variable='raw' is available from a CSV.
+
+    .nc (processed, written by PLFitter on Save): a Dataset with variables
+    'raw', 'baseline', 'subtracted'; `variable` picks one, and the Dataset's
+    attrs (metadata + fit settings) are carried onto the returned array.
+    A single-variable .nc (older format) is returned for variable='raw'.
     """
-    
+    filepath = Path(filepath)
     if filepath.suffix == '.nc':
-        array = xr.load_dataarray(filepath)
+        ds = xr.load_dataset(filepath)
+        if variable in ds.data_vars:
+            array = ds[variable]
+        elif variable == 'raw' and len(ds.data_vars) == 1:
+            array = ds[next(iter(ds.data_vars))]
+        else:
+            raise KeyError(f"{filepath.name} has no '{variable}' variable "
+                           f"(has: {list(ds.data_vars)})")
+        array = array.assign_attrs({**ds.attrs, **array.attrs})
+    elif variable != 'raw':
+        raise KeyError(f"{filepath.name} is raw data; '{variable}' is only available "
+                       f"in a processed .nc (fit and Save it in PLFitter first)")
     else:
         data = pd.read_csv(filepath, delimiter=',')
         wavelength = data['Wavelength'].values
@@ -64,32 +80,62 @@ def load_pl_data(filepath: Path) -> xr.DataArray:
     return array.sortby('energy')
 
 
-def _load_bfield_map(files: Path | list[Path]) -> xr.DataArray:
-    """
-    Loads a set of PL spectra into one 2D (field, energy) DataArray.
+_SPECTRUM_SUFFIXES = ('.csv', '.nc')
 
-    files: a directory (all files inside are used) or a list of PL spectrum
-    CSVs, one per field value. Field for each is parsed from its filename
-    via utilities.get_field. Sorted by field value (not acquisition order),
-    since B-field sweeps commonly ramp up then back down through zero.
-    """
+
+def _spectrum_paths(files: Path | list[Path]) -> list[Path]:
+    """A directory (its spectrum files) or an explicit list → sorted spectrum paths.
+    Non-spectrum files in a directory (e.g. metadata.txt) are skipped."""
     if isinstance(files, (str, Path)):
         files = [files]
     files = [Path(f) for f in files]
     if len(files) == 1 and files[0].is_dir():
-        files = utilities.get_file_paths(files[0])
+        files = [f for f in utilities.get_file_paths(files[0])
+                 if f.suffix.lower() in _SPECTRUM_SUFFIXES]
+    return sorted(files)
 
-    spectra = []
-    for filepath in sorted(files):
-        da = load_pl_data(filepath)
+
+def _has_variable(filepath: Path, variable: str) -> bool:
+    """True if filepath is a processed .nc containing `variable`."""
+    if filepath.suffix != '.nc':
+        return variable == 'raw'
+    with xr.open_dataset(filepath) as ds:
+        return variable in ds.data_vars
+
+
+def _load_bfield_map(files: Path | list[Path], variable: str = 'raw') -> xr.DataArray:
+    """
+    Loads a set of PL spectra into one 2D (field, energy) DataArray.
+
+    files: a directory (its CSV / processed .nc files are used) or an explicit
+    list, one spectrum per field value. variable: 'raw', or 'subtracted' /
+    'baseline' from processed .nc files. Field for each comes from attrs
+    (filename / metadata.txt). Sorted by field value (not acquisition order),
+    since B-field sweeps commonly ramp up then back down through zero.
+
+    For processed spectra, attrs fit_emin/fit_emax on the map are the
+    intersection of the individual fit windows.
+    """
+    spectra, windows = [], []
+    for filepath in _spectrum_paths(files):
+        da = load_pl_data(filepath, variable=variable)
         field = da.attrs['field']
         if field is None:
             warnings.warn(f"Could not parse magnetic field from filename or "
                           f"{utilities.METADATA_FILENAME}: {filepath.name}")
+        if 'fit_emin' in da.attrs:
+            windows.append((da.attrs['fit_emin'], da.attrs['fit_emax']))
         spectra.append(da.expand_dims(field=[field]))
 
     bfield_map = xr.concat(spectra, dim="field").sortby("field")
-    bfield_map.attrs.pop('field', None)  # per-spectrum scalar; now a coordinate
+    # Drop per-spectrum attrs (now a coordinate, or specific to one fit).
+    for key in list(bfield_map.attrs):
+        if key in ('field', 'filename', 'lineshape', 'fit_emin', 'fit_emax') \
+                or key.startswith(('peak_', 'baseline_')):
+            del bfield_map.attrs[key]
+    if windows and len(windows) == len(spectra):
+        bfield_map.attrs['fit_emin'] = max(w[0] for w in windows)
+        bfield_map.attrs['fit_emax'] = min(w[1] for w in windows)
     bfield_map['field'].attrs = {'long_name': 'Magnetic Field', 'units': 'T'}
     bfield_map['energy'].attrs['long_name'] = 'Energy'
     return bfield_map
@@ -139,6 +185,13 @@ class _EnergyRangeControl:
         self._set_box(self.tb_emin, self.emin)
         self._set_box(self.tb_emax, self.emax)
 
+    def set_range(self, lo: float, hi: float):
+        """Programmatically set the range (clamped to the data bounds); no on_change."""
+        self.emin = float(np.clip(lo, *self._bounds))
+        self.emax = float(np.clip(hi, *self._bounds))
+        self._set_box(self.tb_emin, self.emin)
+        self._set_box(self.tb_emax, self.emax)
+
     def _set_box(self, tb: TextBox, value: float):
         # set_val fires on_submit; suppress it for programmatic updates.
         self._syncing = True
@@ -175,15 +228,29 @@ class BfieldContourBuilder:
     normalize all spectra against the dataset's global max. Save writes the
     current figure to a PNG.
 
+    Input is a raw sweep folder (CSVs) or a processed sweep folder (.nc files
+    written by PLFitter's Save). If every spectrum has been fitted, a
+    "Data" button switches between baseline-subtracted (default) and raw.
+
     Usage:
-        files = select_directory(Path(cfg['pl_dir']))
+        files = select_directory(Path(cfg['processed_pl_dir']))
         BfieldContourBuilder(files, output_dir=Path(cfg['processed_pl_dir'])).run()
     """
 
     DEFAULT_CMAP = 'inferno'
+    _VARIABLES = ('subtracted', 'raw')
 
     def __init__(self, files: Path | list[Path], output_dir: Path):
-        self.data = _load_bfield_map(files)
+        paths = _spectrum_paths(files)
+        self.maps = {'raw': _load_bfield_map(paths, 'raw')}
+        unfitted = [p.name for p in paths if not _has_variable(p, 'subtracted')]
+        if not unfitted:
+            self.maps['subtracted'] = _load_bfield_map(paths, 'subtracted')
+        elif any(p.suffix == '.nc' for p in paths):
+            warnings.warn(f"{len(unfitted)} spectra have no baseline-subtracted data "
+                          f"(not fitted/saved yet), showing raw only: {', '.join(unfitted)}")
+        self.variable = 'subtracted' if 'subtracted' in self.maps else 'raw'
+
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -201,25 +268,33 @@ class BfieldContourBuilder:
         outer_gs = self.fig.add_gridspec(nrows=2, ncols=1, height_ratios=[3, 1])
         self.ax = self.fig.add_subplot(outer_gs[0])  # plot; colorbar auto-placed via ax=
 
+        has_toggle = len(self.maps) > 1
         controls_gs = outer_gs[1].subgridspec(nrows=1, ncols=2, width_ratios=[3, 1])
         textbox_gs = controls_gs[0].subgridspec(nrows=1, ncols=3)
-        side_gs = controls_gs[1].subgridspec(nrows=2, ncols=1, height_ratios=[2, 1])
+        side_gs = controls_gs[1].subgridspec(nrows=3 if has_toggle else 2, ncols=1,
+                                             height_ratios=[2, 1, 1] if has_toggle else [2, 1])
 
         ax_cmap = self.fig.add_subplot(textbox_gs[0, 0])
         ax_emin = self.fig.add_subplot(textbox_gs[0, 1])
         ax_emax = self.fig.add_subplot(textbox_gs[0, 2])
         ax_norm = self.fig.add_subplot(side_gs[0, 0])
-        ax_save = self.fig.add_subplot(side_gs[1, 0])
+        ax_save = self.fig.add_subplot(side_gs[-1, 0])
 
         self.tb_cmap = TextBox(ax_cmap, '', initial=self.cmap)
         self.erange = _EnergyRangeControl(ax_emin, ax_emax, on_change=self._draw)
         self.erange.set_data_bounds(float(self.data.energy.min()),
                                     float(self.data.energy.max()))
+        if 'fit_emin' in self.data.attrs:
+            # Open on the fitted window, not on extrapolated baseline.
+            self.erange.set_range(self.data.attrs['fit_emin'], self.data.attrs['fit_emax'])
         ax_cmap.set_title('Colormap', fontsize=9)
         ax_emin.set_title('E min (eV)', fontsize=9)
         ax_emax.set_title('E max (eV)', fontsize=9)
         self.cb_norm = CheckButtons(ax_norm, ['Normalize to\nglobal max'], [False])
         self.btn_save = Button(ax_save, 'Save')
+        if has_toggle:
+            self.btn_data = Button(self.fig.add_subplot(side_gs[1, 0]), self._data_label())
+            self.btn_data.on_clicked(self._on_data)
 
         self.tb_cmap.on_submit(self._on_cmap)
         self.cb_norm.on_clicked(self._on_normalize)
@@ -231,6 +306,23 @@ class BfieldContourBuilder:
     # ------------------------------------------------------------------
     # Internal: compute and draw
     # ------------------------------------------------------------------
+
+    @property
+    def data(self) -> xr.DataArray:
+        """The (field, energy) map currently shown: raw or baseline-subtracted."""
+        return self.maps[self.variable]
+
+    def _data_label(self) -> str:
+        return f"Data: {self.variable.capitalize()} ▾"
+
+    def _on_data(self, _event):
+        # Cycle raw ↔ subtracted; keep the E range (clamped to the new map).
+        options = [v for v in self._VARIABLES if v in self.maps]
+        self.variable = options[(options.index(self.variable) + 1) % len(options)]
+        self.btn_data.label.set_text(self._data_label())
+        self.erange.set_data_bounds(float(self.data.energy.min()),
+                                    float(self.data.energy.max()))
+        self._draw()
 
     def _current_data(self):
         lo, hi = self.erange.range
@@ -248,7 +340,11 @@ class BfieldContourBuilder:
         result = data.plot.contourf(x='field', y='energy', cmap=self.cmap,
                                      ax=self.ax, add_colorbar=False)
         self._cbar = self.fig.colorbar(result, ax=self.ax)
-        self._cbar.set_label('Intensity (normalized)' if self.normalize else 'Intensity (arb. units)')
+        label = 'Intensity'
+        if self.variable == 'subtracted':
+            label += ', baseline-subtracted'
+        label += ' (normalized)' if self.normalize else ' (arb. units)'
+        self._cbar.set_label(label)
         self.fig.canvas.draw_idle()
 
     # ------------------------------------------------------------------
@@ -268,7 +364,8 @@ class BfieldContourBuilder:
 
     def _save(self, _event):
         sample = self.data.attrs.get('sample', 'bfield')
-        out_path = self.output_dir / f"{sample.replace(' ', '')}_bfield_contour.png"
+        suffix = '_subtracted' if self.variable == 'subtracted' else ''
+        out_path = self.output_dir / f"{sample.replace(' ', '')}_bfield_contour{suffix}.png"
 
         self.fig.canvas.draw()
         renderer = self.fig.canvas.get_renderer()  # pyright: ignore[reportAttributeAccessIssue]
@@ -440,6 +537,45 @@ def _append_rows_csv(csv_path: Path, df: pd.DataFrame):
     merged.to_csv(csv_path, index=False)
     print(f"Note: {csv_path.name} had an older column layout; merged and rewrote it "
           f"(older rows have blank values in new columns).")
+
+
+_PEAK_KEYS = ('energy', 'energy_err', 'width', 'width_err',
+              'amplitude', 'amplitude_err', 'area', 'area_err')
+
+
+def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, lineshape: str):
+    """
+    Write one fitted spectrum as a processed .nc (the PL analog of a TRR dataset
+    file): variables 'raw', 'baseline' (fitted baseline evaluated over the full
+    energy range) and 'subtracted' (raw − baseline). Metadata, fit settings and
+    per-peak results go in the Dataset attrs. Overwrites, so a refit replaces it.
+
+    Outside [fit_emin, fit_emax] the baseline is extrapolated from the fit window.
+    """
+    bl = result['baseline']
+    metadata = {k: raw.attrs.get(k) for k in ('filename', 'sample', 'spot', 'field', 'temperature')}
+    raw = raw.copy()
+    raw.attrs = {}
+    baseline = xr.DataArray(_eval_baseline(bl, raw.energy.values),
+                            coords={'energy': raw.energy}, name='baseline')
+    ds = xr.Dataset({'raw': raw, 'baseline': baseline, 'subtracted': raw - baseline})
+
+    attrs = {k: v for k, v in metadata.items() if v is not None}
+    attrs.update({
+        'lineshape':     lineshape,
+        'baseline_type': bl['type'],
+        'baseline_c0':   bl['c0'],
+        'baseline_c1':   bl['c1'],
+        'baseline_xc':   bl['xc'],
+        'fit_emin':      float(np.min(result['x_fit'])),
+        'fit_emax':      float(np.max(result['x_fit'])),
+    })
+    for key in _PEAK_KEYS:   # one entry per peak, in peak order
+        attrs[f'peak_{key}'] = np.array([p[key] for p in result['peaks']], dtype=float)
+    ds.attrs = attrs   # netCDF can't store None attrs; those were dropped above
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ds.to_netcdf(path, mode='w')
 
 
 def _plot_fit_overlay(ax: Axes, result: dict) -> list:
@@ -761,6 +897,13 @@ class PLFitter:
         fig_save.savefig(plot_path, dpi=150)
         plt.close(fig_save)
         print(f"Plot → {plot_path}")
+
+        # Processed spectrum (raw / baseline / subtracted) for the contour builder,
+        # one .nc per spectrum under <output_dir>/<sweep folder>/, like TRR's per-set .nc.
+        nc_path = self.output_dir / filepath.parent.name / f"{filepath.stem}.nc"
+        _save_processed_spectrum(nc_path, self.data, self.fit_result,
+                                 self.fit_result['lineshape'])
+        print(f"Spectrum → {nc_path}")
 
     def _next(self, _event):
         if self.current_idx + 1 >= len(self.files):

@@ -5,27 +5,32 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
     python scripts/steady_state_driver.py --project MyExperiment
 
     A file browser opens in the project's PL data directory — navigate to a
-    date subfolder and select one or more CSV files (Ctrl+A for all).
+    sweep (date) subfolder and select its CSV files (Ctrl+A for all).
 
-    Left-click the spectrum to place peak markers.
-    Right-click a marker to remove it.
-    Zoom with matplotlib's zoom tool to restrict the fit range.
+    Left-click the spectrum to place peak markers; right-click to remove one.
+    E min / E max boxes set the fit window (persists across files; the
+    toolbar zoom is view-only). "Baseline" button: constant or linear.
+    "Carry peaks to next file" seeds the next spectrum's markers.
     Buttons: Fit Gaussian | Fit Lorentzian | Clear Peaks | Save | Next →
 
-    Results append to <processed_pl_dir>/fit_results.csv (one row per peak).
-    Fit-overlay plots save to <processed_pl_dir>/plots/<stem>_fit.png.
+    Save writes, per spectrum:
+      <processed_pl_dir>/fit_results.csv          one row per peak, with 1σ errors
+      <processed_pl_dir>/plots/<stem>_fit.png     fit overlay
+      <processed_pl_dir>/<sweep>/<stem>.nc        raw / baseline / subtracted data
+                                                  (+ fit settings and results in attrs)
 
 CONTOUR PLOT — PL intensity vs. energy and B-field:
     python scripts/steady_state_driver.py --project MyExperiment --mode contour-plot
 
-    A directory browser opens in the project's PL data directory — pick the
-    date subfolder containing the B-field series. Pass --files to skip the
-    browser (a single directory, or an explicit list of CSV paths).
+    A directory browser opens in the project's processed PL directory — pick
+    a sweep folder of fitted .nc spectra. A raw CSV sweep folder also works
+    (raw data only). Pass --files to skip the browser (a single directory,
+    or an explicit list of spectrum paths).
 
-    An interactive matplotlib window opens with live controls: colormap
-    name, lower/upper energy bound (eV), and a toggle to normalize all
-    spectra against the dataset's global max. Save writes the current
-    figure to <processed_pl_dir>/<sample>_bfield_contour.png.
+    Live controls: colormap, E min / E max (eV), normalize to global max, and
+    — when every spectrum in the folder has been fitted — a "Data" button to
+    switch between baseline-subtracted (default, opens on the fit window) and
+    raw. Save writes <processed_pl_dir>/<sample>_bfield_contour[_subtracted].png.
 
 COMPARISON PLOTS — run the #%% cells below interactively in VS Code
     after fitting to build up fit_results.csv.
@@ -79,7 +84,7 @@ if __name__ == "__main__":
         if args.files:
             files = [Path(f) for f in args.files]
         else:
-            files = select_directory(Path(cfg['pl_dir']))
+            files = select_directory(Path(cfg['processed_pl_dir']))
             if not files:
                 raise SystemExit("No directory selected.")
         print("Opening contour-plot builder...")
