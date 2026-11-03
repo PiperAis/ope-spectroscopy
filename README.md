@@ -110,6 +110,22 @@ Example: `01-flake1a-1p6K-0p2T-70kSF-120mV-2pass-offset1`
 - Use `n` prefix for negative fields: `n0p2T` → −0.2 T
 - Unrecognized tokens are preserved as a freeform list in the Obsidian lab notebook if used.
 
+### Folder metadata (`metadata.txt`)
+
+If a parameter is the same for every file in a folder (e.g. the sample), you can leave it out of the filenames and put it in a `metadata.txt` in that folder instead, one `key: value` per line:
+
+```
+# Constant for every file in this folder
+sample: Flake 1a
+temperature: 1.6
+scale_factor: 70000
+```
+
+- Recognized keys: `sample`, `spot`, `field` (T), `temperature` (K), `scale_factor`, `rzero` (mV). Any other keys are kept too.
+- Write values in their final form, not filename form: `Flake 1a` not `flake1a`, `1.6` not `1p6K`, `-0.2` not `n0p2T`, `70000` not `70kSF`.
+- A value in the filename overrides `metadata.txt`, with a warning if the two disagree.
+- `#` starts a comment.
+
 ---
 
 ## Running the scripts
@@ -162,7 +178,7 @@ After fitting, open `steady_state_driver.py` in VS Code (or your Python environm
 | `fitting_functions` | Shared fitting primitives (exponential decay, Lorentzian, Gaussian, peak finding) |
 | `fft_functions` | FFT-based noise analysis utilities |
 | `noise_remover` | Noise removal step used in the TRR pipeline |
-| `utilities` | `load_config`; filename parsers (`get_field`, `get_temperature`, `get_sample_name`, …); file helpers |
+| `utilities` | `load_config`; filename parsers (`get_field`, `get_temperature`, `get_sample_name`, …); `get_metadata` (filename + folder `metadata.txt`); file helpers |
 
 ---
 
