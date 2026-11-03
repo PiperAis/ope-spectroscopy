@@ -49,6 +49,15 @@ def Lorentz(p : list, x, N=None):
         result += area / (1 + ((x - center) / (FWHM / 2))**2)
     return result
 
+def peak_area(lineshape: str, amp: float, fwhm: float) -> float:
+    """Integrated area of one peak ('gaussian' or 'lorentzian') from its height and FWHM."""
+    if lineshape == 'gaussian':
+        sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+        return amp * sigma * np.sqrt(2 * np.pi)
+    if lineshape == 'lorentzian':
+        return amp * np.pi * fwhm / 2
+    raise ValueError(f"Unknown lineshape: {lineshape!r}")
+
 def exp_decay(t, A, B, C):
     """
     A (result[0]): Amplitude
@@ -75,6 +84,12 @@ def diffL(p : list, x, y, N=None):
     parameters p where p = [height, center, FWHM]'''
     difference = np.sum((y - Lorentz(p, x, N))**2)
     return difference
+
+# lineshape name -> (model function, sum-of-squares objective)
+LINESHAPES = {
+    'gaussian':   (Gaussian, diffG),
+    'lorentzian': (Lorentz, diffL),
+}
 
 def diffquad(p, x, y):
     return np.sum((y-quadratic(p,x))**2)
