@@ -219,14 +219,25 @@ class _EnergyRangeControl:
         self._on_change()
 
 
+def _savgol_along(da: xr.DataArray, dim: str, window: int, polyorder: int) -> xr.DataArray:
+    """Savitzky–Golay smooth `da` along `dim` (window in points; shrunk to fit if too long)."""
+    n = da.sizes[dim]
+    window = min(window, n if n % 2 else n - 1)
+    if window <= polyorder:
+        return da
+    return xr.apply_ufunc(lambda a: smooth(a, window, polyorder, axis=-1), da,
+                          input_core_dims=[[dim]], output_core_dims=[[dim]], keep_attrs=True)
+
+
 class BfieldContourBuilder:
     """
     Interactive contour (heatmap) builder for PL intensity vs. energy and
     magnetic field.
 
-    Live controls: colormap, lower/upper energy bound, and a toggle to
-    normalize all spectra against the dataset's global max. Save writes the
-    current figure to a PNG.
+    Live controls: colormap, lower/upper energy bound, a toggle to normalize
+    all spectra against the dataset's global max, and an optional
+    Savitzky–Golay smoothing along energy (window in points; display only,
+    the underlying data is not changed). Save writes the current figure to a PNG.
 
     Input is a raw sweep folder (CSVs) or a processed sweep folder (.nc files
     written by PLFitter's Save). If every spectrum has been fitted, a
@@ -239,6 +250,8 @@ class BfieldContourBuilder:
 
     DEFAULT_CMAP = 'inferno'
     _VARIABLES = ('subtracted', 'raw')
+    SMOOTH_POLYORDER = 3
+    DEFAULT_SMOOTH_WINDOW = 11   # points along energy; must be odd and > polyorder
 
     def __init__(self, files: Path | list[Path], output_dir: Path):
         paths = _spectrum_paths(files)
@@ -256,6 +269,8 @@ class BfieldContourBuilder:
 
         self.cmap = self.DEFAULT_CMAP
         self.normalize = False
+        self.smooth = False
+        self.smooth_window = self.DEFAULT_SMOOTH_WINDOW
 
         self.fig: Figure  # created in run()
         self.erange: _EnergyRangeControl
@@ -270,13 +285,14 @@ class BfieldContourBuilder:
 
         has_toggle = len(self.maps) > 1
         controls_gs = outer_gs[1].subgridspec(nrows=1, ncols=2, width_ratios=[3, 1])
-        textbox_gs = controls_gs[0].subgridspec(nrows=1, ncols=3)
+        textbox_gs = controls_gs[0].subgridspec(nrows=1, ncols=4)
         side_gs = controls_gs[1].subgridspec(nrows=3 if has_toggle else 2, ncols=1,
                                              height_ratios=[2, 1, 1] if has_toggle else [2, 1])
 
         ax_cmap = self.fig.add_subplot(textbox_gs[0, 0])
         ax_emin = self.fig.add_subplot(textbox_gs[0, 1])
         ax_emax = self.fig.add_subplot(textbox_gs[0, 2])
+        ax_win  = self.fig.add_subplot(textbox_gs[0, 3])
         ax_norm = self.fig.add_subplot(side_gs[0, 0])
         ax_save = self.fig.add_subplot(side_gs[-1, 0])
 
@@ -290,7 +306,11 @@ class BfieldContourBuilder:
         ax_cmap.set_title('Colormap', fontsize=9)
         ax_emin.set_title('E min (eV)', fontsize=9)
         ax_emax.set_title('E max (eV)', fontsize=9)
-        self.cb_norm = CheckButtons(ax_norm, ['Normalize to\nglobal max'], [False])
+        self.tb_win = TextBox(ax_win, '', initial=str(self.smooth_window))
+        ax_win.set_title('Smooth window (pts)', fontsize=9)
+        self.tb_win.on_submit(self._on_window)
+        self.cb_norm = CheckButtons(ax_norm, [self._NORM_LABEL, self._SMOOTH_LABEL],
+                                    [self.normalize, self.smooth])
         self.btn_save = Button(ax_save, 'Save')
         if has_toggle:
             self.btn_data = Button(self.fig.add_subplot(side_gs[1, 0]), self._data_label())
@@ -325,10 +345,15 @@ class BfieldContourBuilder:
         self._draw()
 
     def _current_data(self):
+        data = self.data
+        if self.smooth:
+            # Smooth the full spectra before cropping, so the E min/E max edges
+            # don't pick up filter edge effects.
+            data = _savgol_along(data, 'energy', self.smooth_window, self.SMOOTH_POLYORDER)
         lo, hi = self.erange.range
-        cropped = self.data.sel(energy=slice(lo, hi))
+        cropped = data.sel(energy=slice(lo, hi))
         if self.normalize:
-            cropped = cropped / float(self.data.max())
+            cropped = cropped / float(data.max())
         return cropped
 
     def _draw(self):
@@ -344,6 +369,8 @@ class BfieldContourBuilder:
         if self.variable == 'subtracted':
             label += ', baseline-subtracted'
         label += ' (normalized)' if self.normalize else ' (arb. units)'
+        if self.smooth:
+            label += f'\nS-G smoothed, {self.smooth_window} pts'
         self._cbar.set_label(label)
         self.fig.canvas.draw_idle()
 
@@ -358,13 +385,43 @@ class BfieldContourBuilder:
         self.cmap = text
         self._draw()
 
-    def _on_normalize(self, _label):
-        self.normalize = not self.normalize
+    _NORM_LABEL = 'Normalize to\nglobal max'
+    _SMOOTH_LABEL = 'Smooth (S-G)'
+
+    def _on_normalize(self, label):
+        # One CheckButtons widget holds both toggles; dispatch on the clicked label.
+        if label == self._SMOOTH_LABEL:
+            self.smooth = not self.smooth
+        else:
+            self.normalize = not self.normalize
         self._draw()
+
+    def _on_window(self, text):
+        try:
+            value = int(float(text))
+        except ValueError:
+            print(f"Invalid smoothing window: {text!r}")
+            self.tb_win.set_val(str(self.smooth_window))   # restore the box
+            return
+        # Savitzky–Golay needs an odd window longer than the polynomial order.
+        window = max(value, self.SMOOTH_POLYORDER + 2)
+        if window % 2 == 0:
+            window += 1
+        if str(window) != text.strip():
+            print(f"Smoothing window set to {window} (must be odd and > {self.SMOOTH_POLYORDER})")
+            self.tb_win.set_val(str(window))   # re-submits with the valid value
+            return
+        if window == self.smooth_window:
+            return
+        self.smooth_window = window
+        if self.smooth:
+            self._draw()
 
     def _save(self, _event):
         sample = self.data.attrs.get('sample', 'bfield')
         suffix = '_subtracted' if self.variable == 'subtracted' else ''
+        if self.smooth:
+            suffix += f'_sg{self.smooth_window}'
         out_path = self.output_dir / f"{sample.replace(' ', '')}_bfield_contour{suffix}.png"
 
         self.fig.canvas.draw()
