@@ -30,6 +30,11 @@ from . import utilities
 
 xr.set_options(keep_attrs=True)
 
+# Metadata attrs every loaded spectrum carries (resolved by utilities.get_metadata
+# from the filename + folder metadata.txt), and that a saved fit records.
+_METADATA_KEYS = ('sample', 'spot', 'field', 'temperature')
+
+
 def load_pl_data(filepath: Path, variable: str = 'raw') -> xr.DataArray:
     """
     Loads one PL spectrum into an xarray DataArray (energy coords, ascending).
@@ -73,7 +78,7 @@ def load_pl_data(filepath: Path, variable: str = 'raw') -> xr.DataArray:
     # Resolve metadata (filename + folder metadata.txt) once, at load time.
     # setdefault: attrs already stored in a .nc file take precedence.
     metadata = utilities.get_metadata(filepath)
-    for key in ('sample', 'spot', 'field', 'temperature'):
+    for key in _METADATA_KEYS:
         array.attrs.setdefault(key, metadata[key])
 
     return array.sortby('energy')
@@ -419,7 +424,7 @@ def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, linesh
     Outside [fit_emin, fit_emax] the baseline is extrapolated from the fit window.
     """
     bl = result['baseline']
-    metadata = {k: raw.attrs.get(k) for k in ('filename', 'sample', 'spot', 'field', 'temperature')}
+    metadata = {k: raw.attrs.get(k) for k in ('filename', *_METADATA_KEYS)}
     raw = raw.copy()
     raw.attrs = {}
     baseline = xr.DataArray(_eval_baseline(bl, raw.energy.values),
@@ -458,10 +463,7 @@ def _fit_rows(filename: str, data: xr.DataArray, result: dict,
             'filename':    filename,
             'experiment':  experiment,
             'fit_number':  fit_number,
-            'sample':      data.attrs.get('sample', ''),
-            'spot':        data.attrs.get('spot', ''),
-            'field':       data.attrs.get('field'),
-            'temperature': data.attrs.get('temperature'),
+            **{k: data.attrs.get(k) for k in _METADATA_KEYS},
             'lineshape':   result['lineshape'],
             'baseline':    result['baseline']['type'],
             'fit_emin':    float(np.min(result['x_fit'])),
