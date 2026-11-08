@@ -172,6 +172,42 @@ class _EnergyRangeControl:
         self._on_change()
 
 
+class _CycleButton:
+    """
+    Button that steps through a fixed list of options, one per click, labelled
+    "<name>: <option> ▾". Shared by the interactive GUIs.
+
+    Each click moves to the next option (wrapping), relabels, and calls
+    on_change(value). set(value) changes it programmatically without calling
+    on_change. Option display text is display_names[option] if given,
+    else option.capitalize().
+    """
+
+    def __init__(self, ax: Axes, name: str, options, value: str, on_change,
+                 display_names: dict | None = None):
+        self.options = tuple(options)
+        self.value = value
+        self._name = name
+        self._display = display_names or {}
+        self._on_change = on_change
+        self.button = Button(ax, self._label())
+        self.button.on_clicked(self._on_click)
+
+    def _label(self) -> str:
+        return f"{self._name}: {self._display.get(self.value, self.value.capitalize())} ▾"
+
+    def set(self, value: str):
+        """Programmatically select value and relabel; no on_change."""
+        self.value = value
+        self.button.label.set_text(self._label())
+
+    def _on_click(self, _event):
+        i = self.options.index(self.value)
+        self.set(self.options[(i + 1) % len(self.options)])
+        self._on_change(self.value)
+        self.button.ax.figure.canvas.draw_idle()
+
+
 def plot_multiple_together(directory: Path) -> None:
     """
     Plots all PL spectra in a directory on a single figure.
@@ -564,8 +600,8 @@ class PLFitter:
 
         # Same row/height as the E boxes, so it can't overlap the button row.
         ax_base = self.fig.add_axes((0.62, 0.135, 0.22, 0.05))
-        self.btn_base = Button(ax_base, self._baseline_label())
-        self.btn_base.on_clicked(self._on_baseline)
+        self.btn_base = _CycleButton(ax_base, 'Baseline', self._BASELINES, self.baseline,
+                                     on_change=self._on_baseline)
 
         # Keep references so widgets aren't garbage-collected.
         self._buttons = [btn_fitg, btn_fitl, btn_clear, btn_save, btn_back, btn_next, cb_carry,
@@ -599,7 +635,7 @@ class PLFitter:
         if state is not None:
             self.erange.set_range(*state['range'])
             self.baseline = state['baseline']
-            self.btn_base.label.set_text(self._baseline_label())
+            self.btn_base.set(self.baseline)
 
         self.ax.cla()
         cropped = self._current_data()
@@ -653,15 +689,8 @@ class PLFitter:
 
     _BASELINES = ('constant', 'linear')
 
-    def _baseline_label(self) -> str:
-        return f"Baseline: {self.baseline.capitalize()} ▾"
-
-    def _on_baseline(self, _event):
-        # Cycle to the next baseline type and relabel the button.
-        i = self._BASELINES.index(self.baseline)
-        self.baseline = self._BASELINES[(i + 1) % len(self._BASELINES)]
-        self.btn_base.label.set_text(self._baseline_label())
-        self.fig.canvas.draw_idle()
+    def _on_baseline(self, baseline: str):
+        self.baseline = baseline
         # If a fit is showing, refit with the new baseline so the two can be compared.
         if self.fit_result is not None:
             self._fit(self.fit_result['lineshape'])

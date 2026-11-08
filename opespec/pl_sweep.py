@@ -34,7 +34,7 @@ from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from matplotlib.colorbar import Colorbar
 from . import utilities
-from .steady_state import load_pl_data, _spectrum_paths, _EnergyRangeControl
+from .steady_state import load_pl_data, _spectrum_paths, _EnergyRangeControl, _CycleButton
 
 xr.set_options(keep_attrs=True)
 
@@ -202,15 +202,16 @@ class SweepContourBuilder:
         ax_win.set_title('Smooth window (pts)', fontsize=9)
         self.tb_win.on_submit(self._on_window)
         self.cb_smooth = CheckButtons(ax_smooth, [self._SMOOTH_LABEL], [self.smooth])
-        self.btn_norm = Button(ax_norm, self._norm_label())
+        self.btn_norm = _CycleButton(ax_norm, 'Normalize', self._NORMS, self.normalize,
+                                     on_change=self._on_normalize, display_names=self._NORM_NAMES)
         self.btn_save = Button(ax_save, 'Save')
         if has_toggle:
-            self.btn_data = Button(self.fig.add_subplot(side_gs[2, 0]), self._data_label())
-            self.btn_data.on_clicked(self._on_data)
+            self.btn_data = _CycleButton(self.fig.add_subplot(side_gs[2, 0]), 'Data',
+                                         [v for v in self._VARIABLES if v in self.maps],
+                                         self.variable, on_change=self._on_data)
 
         self.tb_cmap.on_submit(self._on_cmap)
         self.cb_smooth.on_clicked(self._on_smooth)
-        self.btn_norm.on_clicked(self._on_normalize)
         self.btn_save.on_clicked(self._save)
 
         self._draw()
@@ -225,14 +226,9 @@ class SweepContourBuilder:
         """The (sweep, energy) map currently shown: raw or baseline-subtracted."""
         return self.maps[self.variable]
 
-    def _data_label(self) -> str:
-        return f"Data: {self.variable.capitalize()} ▾"
-
-    def _on_data(self, _event):
-        # Cycle raw ↔ subtracted; keep the E range (clamped to the new map).
-        options = [v for v in self._VARIABLES if v in self.maps]
-        self.variable = options[(options.index(self.variable) + 1) % len(options)]
-        self.btn_data.label.set_text(self._data_label())
+    def _on_data(self, variable: str):
+        # Switch raw ↔ subtracted; keep the E range (clamped to the new map).
+        self.variable = variable
         self.erange.set_data_bounds(float(self.data.energy.min()),
                                     float(self.data.energy.max()))
         self._draw()
@@ -286,14 +282,8 @@ class SweepContourBuilder:
     _NORMS = ('off', 'global', 'spectrum')
     _NORM_NAMES = {'off': 'Off', 'global': 'Global max', 'spectrum': 'Per spectrum'}
 
-    def _norm_label(self) -> str:
-        return f"Normalize: {self._NORM_NAMES[self.normalize]} ▾"
-
-    def _on_normalize(self, _event):
-        # Cycle to the next normalization mode and relabel the button.
-        i = self._NORMS.index(self.normalize)
-        self.normalize = self._NORMS[(i + 1) % len(self._NORMS)]
-        self.btn_norm.label.set_text(self._norm_label())
+    def _on_normalize(self, mode: str):
+        self.normalize = mode
         self._draw()
 
     def _on_smooth(self, _label):
