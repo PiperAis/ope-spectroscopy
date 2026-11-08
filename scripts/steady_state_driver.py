@@ -18,8 +18,11 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
     fit, range and baseline; the title shows whether the fit has been saved.
 
     Save writes, per spectrum:
-      <processed_pl_dir>/fit_results.csv          one row per peak, with 1σ errors
-      <processed_pl_dir>/plots/<stem>_fit.png     fit overlay
+      <processed_pl_dir>/fit_results.csv          one row per peak, with 1σ errors, fit
+                                                  window, RMSE/R²; tagged experiment +
+                                                  fit_number (re-save replaces this session's rows)
+      <processed_pl_dir>/<sweep>/plots/fits_<n>/<stem>_fit.png
+                                                  fit overlay; <n> counts up per session
       <processed_pl_dir>/<sweep>/<stem>.nc        raw / baseline / subtracted data
                                                   (+ fit settings and results in attrs)
 

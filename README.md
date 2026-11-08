@@ -152,7 +152,15 @@ python /path/to/scripts/trr_driver.py --project CrSBr-3 --sync-obsidian
 python /path/to/scripts/steady_state_driver.py --project MyExperiment
 ```
 
-Opens a file browser in the project's `pl_dir` — navigate to a date subfolder and select one or more CSV files. An interactive matplotlib window opens: left-click to place peak markers, right-click to remove them, zoom to set the fit range, then choose **Fit Gaussian** or **Fit Lorentzian**. **Save** writes a row per peak to `processed_pl_dir/fit_results.csv` and a clean fit-overlay PNG to `processed_pl_dir/plots/`. **Next →** advances to the next file and closes when all files are done.
+Opens a file browser in the project's `pl_dir` — navigate to a date subfolder and select one or more CSV files. An interactive matplotlib window opens: left-click to place peak markers, right-click to remove them, zoom to set the fit range, then choose **Fit Gaussian** or **Fit Lorentzian**. **Save** writes:
+
+- a row per peak to `processed_pl_dir/fit_results.csv`. Each row has 1σ errors, the fit window (`fit_emin`/`fit_emax`) and fit quality (`rmse`, `r_squared`), and is tagged with `experiment` (the sweep folder) and `fit_number`.
+- a clean fit-overlay PNG to `processed_pl_dir/<experiment>/plots/fits_<n>/<stem>_fit.png`.
+- the processed spectrum to `processed_pl_dir/<experiment>/<stem>.nc`, which is overwritten by the latest save and records its `fit_number`.
+
+Each fitter run is a new fit session, and `n` (= `fit_number`) counts up from the highest existing `fits_<n>` folder for that experiment. Re-saving a spectrum in the same session replaces its CSV rows and plot. Earlier sessions are kept, so iterations can be compared. `track_peak` uses each spectrum's latest fit by default; pass `fit_number=` to use a specific session.
+
+**Next →** advances to the next file and closes when all files are done.
 
 ### PL vs. B-field contour plot
 

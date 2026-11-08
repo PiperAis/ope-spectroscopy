@@ -130,7 +130,8 @@ def _load_bfield_map(files: Path | list[Path], variable: str = 'raw') -> xr.Data
     bfield_map = xr.concat(spectra, dim="field").sortby("field")
     # Drop per-spectrum attrs (now a coordinate, or specific to one fit).
     for key in list(bfield_map.attrs):
-        if key in ('field', 'filename', 'lineshape', 'fit_emin', 'fit_emax') \
+        if key in ('field', 'filename', 'lineshape', 'fit_emin', 'fit_emax',
+                   'fit_number', 'rmse', 'r_squared') \
                 or key.startswith(('peak_', 'baseline_')):
             del bfield_map.attrs[key]
     if windows and len(windows) == len(spectra):
@@ -581,8 +582,17 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
                 'y':             fn(fit[3*j:3*(j+1)], x),
             })
 
+        # Fit quality from the same residuals (no per-point σ, so RMSE + R², not χ²).
+        n_points = len(y)
+        dof = n_points - len(p0)
+        sse = float(np.sum(result.fun ** 2))
+        sst = float(np.sum((y - y.mean()) ** 2))
+        rmse = float(np.sqrt(sse / dof)) if dof > 0 else np.nan
+        r_squared = 1 - sse / sst if dof > 0 and sst > 0 else np.nan
+
         return {'peaks': peaks, 'x_fit': x, 'y_total': fn(fit, x),
-                'y_data': y_sub, 'baseline': bl}
+                'y_data': y_sub, 'baseline': bl,
+                'n_points': n_points, 'dof': dof, 'rmse': rmse, 'r_squared': r_squared}
 
     except Exception as e:
         print(f"Fit error: {e}")
@@ -609,11 +619,44 @@ def _append_rows_csv(csv_path: Path, df: pd.DataFrame):
           f"(older rows have blank values in new columns).")
 
 
+def _row_keys(frame: pd.DataFrame, keys: list[str]) -> pd.MultiIndex:
+    """Comparable row keys. A CSV round trip can change a value's type (1 → 1.0
+    when the column has blanks; folder name '20261105' → int), so numeric-looking
+    values are compared as numbers and everything else as strings."""
+    cols = {}
+    for k in keys:
+        num = pd.to_numeric(frame[k], errors='coerce').astype(float)
+        cols[k] = num.astype(str).where(num.notna(), frame[k].astype(str))
+    return pd.MultiIndex.from_frame(pd.DataFrame(cols))
+
+
+def _upsert_rows_csv(csv_path: Path, df: pd.DataFrame, keys: list[str]):
+    """
+    Write rows to a CSV, replacing any existing rows whose `keys` values match
+    a row in df (e.g. a re-saved fit). Other rows are kept. Columns are merged
+    by name as in _append_rows_csv: df's columns first, extras after, and
+    columns missing on either side become blank.
+    """
+    if not csv_path.exists():
+        df.to_csv(csv_path, index=False)
+        return
+    existing = pd.read_csv(csv_path)
+    if list(existing.columns) != list(df.columns):
+        print(f"Note: {csv_path.name} had an older column layout; merged and rewrote it "
+              f"(older rows have blank values in new columns).")
+    if all(k in existing.columns for k in keys):
+        existing = existing[~_row_keys(existing, keys).isin(_row_keys(df, keys))]
+    merged = pd.concat([existing, df], ignore_index=True)
+    merged = merged[list(df.columns) + [c for c in merged.columns if c not in df.columns]]
+    merged.to_csv(csv_path, index=False)
+
+
 _PEAK_KEYS = ('energy', 'energy_err', 'width', 'width_err',
               'amplitude', 'amplitude_err', 'area', 'area_err')
 
 
-def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, lineshape: str):
+def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, lineshape: str,
+                             experiment: str, fit_number: int):
     """
     Write one fitted spectrum as a processed .nc (the PL analog of a TRR dataset
     file): variables 'raw', 'baseline' (fitted baseline evaluated over the full
@@ -632,6 +675,10 @@ def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, linesh
 
     attrs = {k: v for k, v in metadata.items() if v is not None}
     attrs.update({
+        'experiment':    experiment,
+        'fit_number':    int(fit_number),   # matches plots/fits_<n>/ and the CSV
+        'rmse':          float(result['rmse']),
+        'r_squared':     float(result['r_squared']),
         'lineshape':     lineshape,
         'baseline_type': bl['type'],
         'baseline_c0':   bl['c0'],
@@ -681,15 +728,21 @@ class PLFitter:
         fitter = PLFitter(sweep_folder_or_file_list, output_dir=Path(cfg['processed_pl_dir']))
         fitter.run()
 
-    Results are appended to <output_dir>/fit_results.csv (one row per peak).
-    Fit-overlay plots are saved to <output_dir>/plots/<filename>_fit.png.
+    Results go to <output_dir>/fit_results.csv: one row per peak, tagged with
+    experiment and fit_number (= <n> below), plus the fit window and fit
+    quality (rmse, r_squared). Re-saving a spectrum in the same session
+    replaces its rows; earlier sessions' rows are kept.
+    Fit-overlay plots are saved to
+    <output_dir>/<experiment>/plots/fits_<n>/<filename>_fit.png, where
+    <experiment> is the spectrum's sweep folder name and <n> counts up once
+    per fitting session, so earlier iterations are never overwritten.
     """
 
     def __init__(self, files: Path | list[Path], output_dir: Path):
         self.files = _spectrum_paths(files)   # a folder (its .csv/.nc) or a list
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / 'plots').mkdir(exist_ok=True)
+        self._fit_numbers: dict[str, int] = {}  # experiment name → this session's n (fits_<n>/)
 
         self.current_idx = 0
         self.data: xr.DataArray   # current spectrum; set in _load_current()
@@ -938,7 +991,7 @@ class PLFitter:
         self._saved = False
         self._show_fit()
 
-        print(f"\nFit ({lineshape}):")
+        print(f"\nFit ({lineshape}): RMSE={result['rmse']:.3g}, R²={result['r_squared']:.4f}")
         for j, peak in enumerate(result['peaks']):
             print(f"  Peak {j+1}: E={peak['energy']:.4f} ± {peak['energy_err']:.2g} eV | "
                   f"FWHM={peak['width']:.4f} ± {peak['width_err']:.2g} eV | "
@@ -974,17 +1027,24 @@ class PLFitter:
 
         filepath = self.files[self.current_idx]
         da = self.data
+        result = self.fit_result
+        experiment = filepath.parent.name
+        fit_number = self._fit_number(experiment)
 
         rows = []
-        for j, peak in enumerate(self.fit_result['peaks']):
+        for j, peak in enumerate(result['peaks']):
             rows.append({
                 'filename':    filepath.name,
+                'experiment':  experiment,
+                'fit_number':  fit_number,
                 'sample':      da.attrs.get('sample', ''),
                 'spot':        da.attrs.get('spot', ''),
                 'field':       da.attrs.get('field'),
                 'temperature': da.attrs.get('temperature'),
-                'lineshape':   self.fit_result['lineshape'],
-                'baseline':    self.fit_result['baseline']['type'],
+                'lineshape':   result['lineshape'],
+                'baseline':    result['baseline']['type'],
+                'fit_emin':    float(np.min(result['x_fit'])),
+                'fit_emax':    float(np.max(result['x_fit'])),
                 'peak_index':  j,
                 'energy':        peak['energy'],
                 'energy_err':    peak['energy_err'],
@@ -994,11 +1054,17 @@ class PLFitter:
                 'amplitude_err': peak['amplitude_err'],
                 'area':          peak['area'],
                 'area_err':      peak['area_err'],
+                'n_points':    result['n_points'],
+                'dof':         result['dof'],
+                'rmse':        result['rmse'],
+                'r_squared':   result['r_squared'],
             })
 
+        # One row set per (spectrum, fit session): re-saving in this session replaces it.
         csv_path = self.output_dir / 'fit_results.csv'
-        _append_rows_csv(csv_path, pd.DataFrame(rows))
-        print(f"Saved {len(rows)} peak(s) → {csv_path}")
+        _upsert_rows_csv(csv_path, pd.DataFrame(rows),
+                         keys=['experiment', 'filename', 'fit_number'])
+        print(f"Saved {len(rows)} peak(s) as fit {fit_number} → {csv_path}")
 
         # Build a clean figure: no buttons, no peak markers.
         # Plot exactly the (baseline-subtracted) data that was fit.
@@ -1012,21 +1078,42 @@ class PLFitter:
         ax_save.legend(fontsize=8)
         fig_save.tight_layout()
 
-        plot_path = self.output_dir / 'plots' / (filepath.stem + '_fit.png')
+        plot_path = self._fits_dir(experiment) / (filepath.stem + '_fit.png')
         fig_save.savefig(plot_path, dpi=150)
         plt.close(fig_save)
         print(f"Plot → {plot_path}")
 
         # Processed spectrum (raw / baseline / subtracted) for the contour builder,
         # one .nc per spectrum under <output_dir>/<sweep folder>/, like TRR's per-set .nc.
-        nc_path = self.output_dir / filepath.parent.name / f"{filepath.stem}.nc"
+        nc_path = self.output_dir / experiment / f"{filepath.stem}.nc"
         _save_processed_spectrum(nc_path, self.data, self.fit_result,
-                                 self.fit_result['lineshape'])
+                                 self.fit_result['lineshape'], experiment, fit_number)
         print(f"Spectrum → {nc_path}")
 
         self._saved = True
         self._update_title()
         self.fig.canvas.draw_idle()
+
+    def _fits_dir(self, experiment: str) -> Path:
+        """This session's <output_dir>/<experiment>/plots/fits_<n>/ folder.
+
+        Chosen on the first save for that experiment as one past the highest
+        existing fits_<n>; later saves in the same session reuse it.
+        """
+        plots_dir = self.output_dir / experiment / 'plots'
+        if experiment not in self._fit_numbers:
+            plots_dir.mkdir(parents=True, exist_ok=True)
+            taken = [int(p.name[5:]) for p in plots_dir.glob('fits_*')
+                     if p.is_dir() and p.name[5:].isdigit()]
+            n = max(taken, default=0) + 1
+            (plots_dir / f"fits_{n}").mkdir()
+            self._fit_numbers[experiment] = n
+        return plots_dir / f"fits_{self._fit_numbers[experiment]}"
+
+    def _fit_number(self, experiment: str) -> int:
+        """This session's fit number n for experiment (allocated on first save)."""
+        self._fits_dir(experiment)
+        return self._fit_numbers[experiment]
 
     def _next(self, _event):
         self._stash_state()
@@ -1065,24 +1152,27 @@ def load_fit_results(csv_path: Path) -> pd.DataFrame:
     return pd.read_csv(csv_path)
 
 
-_SPECTRUM_KEYS = ['sample', 'spot', 'filename']   # filenames repeat across sweeps
+_SPECTRUM_KEYS = ['experiment', 'sample', 'spot', 'filename']   # filenames repeat across sweeps
 
 
-def _latest_saves(df: pd.DataFrame) -> pd.DataFrame:
+def _latest_saves(df: pd.DataFrame, fit_number: int | None = None) -> pd.DataFrame:
     """
-    Drop superseded fits from fit_results.csv rows.
+    Pick one fit per spectrum from fit_results.csv rows.
 
-    The CSV is append-only, so a spectrum saved more than once has several
-    blocks of rows (each block starts at peak_index 0); keep only the last.
+    The CSV holds one row set per (spectrum, fit session), tagged fit_number.
+    With fit_number given, keep only that session's rows; otherwise keep each
+    spectrum's highest fit_number.
     """
     data = df.copy()
-    save = (data['peak_index'] == 0).cumsum()
+    if fit_number is not None:
+        return data[data['fit_number'] == fit_number]
     # Key columns can be blank (NaN) in the CSV; dropna=False keeps those groups.
-    latest = save.groupby([data[k] for k in _SPECTRUM_KEYS], dropna=False).transform('max')
-    return data[save == latest]
+    latest = data['fit_number'].groupby([data[k] for k in _SPECTRUM_KEYS],
+                                        dropna=False).transform('max')
+    return data[data['fit_number'] == latest]
 
 
-def track_peak(df: pd.DataFrame) -> pd.DataFrame:
+def track_peak(df: pd.DataFrame, fit_number: int | None = None) -> pd.DataFrame:
     """
     Follow one peak through each field sweep: one row per fitted spectrum.
 
@@ -1090,10 +1180,10 @@ def track_peak(df: pd.DataFrame) -> pd.DataFrame:
     at the field closest to 0 (warns if no B = 0 spectrum). From there, walk
     outward through the fields in each direction, taking at each field the
     peak nearest in energy to the one tracked at the previous field. Spectra
-    sharing a field are each matched to that previous energy. Only the
-    latest save of each spectrum is used.
+    sharing a field are each matched to that previous energy. Each spectrum's
+    latest fit (highest fit_number) is used, or the given fit_number only.
     """
-    data = _latest_saves(df)
+    data = _latest_saves(df, fit_number)
     tracked = []
     for (sample, spot), sweep in data.groupby(['sample', 'spot'], dropna=False):
         sweep = sweep.dropna(subset=['field'])
