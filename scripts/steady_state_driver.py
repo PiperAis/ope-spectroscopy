@@ -45,7 +45,8 @@ COMPARISON PLOTS — run the #%% cells below interactively in VS Code
 #%%
 # ---- Imports and config (uncomment and run this cell first for interactive use) ---- #
 
-from opespec.steady_state import PLFitter, BfieldContourBuilder, load_fit_results, plot_peak_param
+from opespec.steady_state import (PLFitter, BfieldContourBuilder, load_fit_results,
+                                  plot_peak_param, track_peak, brightest_point)
 from opespec.utilities import load_config, select_files, select_directory
 
 ## Set project name here for interactive cell use:
@@ -62,6 +63,15 @@ from opespec.utilities import load_config, select_files, select_directory
 
 # Peak energy vs magnetic field, one series per sample:
 # plot_peak_param(results, x_col='field', y_col='energy', peak_index=0, group_by='sample')
+
+# Track the peak brightest at B = 0 through the field sweep (nearest energy, field to field):
+# plot_peak_param(track_peak(results), x_col='field', y_col='energy', group_by='sample',
+#                 title='Tracked peak energy vs field')
+
+# Energy of the highest-intensity data point (no fit) vs field, one sweep folder per sample:
+# sweeps = [Path(cfg['processed_pl_dir']) / d for d in ['2026-10-27', '2026-11-03']]
+# plot_peak_param(brightest_point(sweeps), x_col='field', y_col='energy', group_by='sample',
+#                 title='Brightest-point energy vs field')
 
 # Peak width vs temperature:
 # plot_peak_param(results, x_col='temperature', y_col='width', peak_index=0)

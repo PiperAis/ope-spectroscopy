@@ -234,8 +234,9 @@ class BfieldContourBuilder:
     Interactive contour (heatmap) builder for PL intensity vs. energy and
     magnetic field.
 
-    Live controls: colormap, lower/upper energy bound, a toggle to normalize
-    all spectra against the dataset's global max, and an optional
+    Live controls: colormap, lower/upper energy bound, a "Normalize" button
+    that cycles Off → Global max (all spectra against the dataset's max) →
+    Per spectrum (each spectrum against its own max within the E window), and an optional
     Savitzky–Golay smoothing along energy (window in points; display only,
     the underlying data is not changed). Save writes the current figure to a PNG.
 
@@ -268,7 +269,7 @@ class BfieldContourBuilder:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.cmap = self.DEFAULT_CMAP
-        self.normalize = False
+        self.normalize = 'off'   # one of _NORMS
         self.smooth = False
         self.smooth_window = self.DEFAULT_SMOOTH_WINDOW
 
@@ -286,14 +287,14 @@ class BfieldContourBuilder:
         has_toggle = len(self.maps) > 1
         controls_gs = outer_gs[1].subgridspec(nrows=1, ncols=2, width_ratios=[3, 1])
         textbox_gs = controls_gs[0].subgridspec(nrows=1, ncols=4)
-        side_gs = controls_gs[1].subgridspec(nrows=3 if has_toggle else 2, ncols=1,
-                                             height_ratios=[2, 1, 1] if has_toggle else [2, 1])
+        side_gs = controls_gs[1].subgridspec(nrows=4 if has_toggle else 3, ncols=1)
 
         ax_cmap = self.fig.add_subplot(textbox_gs[0, 0])
         ax_emin = self.fig.add_subplot(textbox_gs[0, 1])
         ax_emax = self.fig.add_subplot(textbox_gs[0, 2])
         ax_win  = self.fig.add_subplot(textbox_gs[0, 3])
-        ax_norm = self.fig.add_subplot(side_gs[0, 0])
+        ax_smooth = self.fig.add_subplot(side_gs[0, 0])
+        ax_norm = self.fig.add_subplot(side_gs[1, 0])
         ax_save = self.fig.add_subplot(side_gs[-1, 0])
 
         self.tb_cmap = TextBox(ax_cmap, '', initial=self.cmap)
@@ -309,15 +310,16 @@ class BfieldContourBuilder:
         self.tb_win = TextBox(ax_win, '', initial=str(self.smooth_window))
         ax_win.set_title('Smooth window (pts)', fontsize=9)
         self.tb_win.on_submit(self._on_window)
-        self.cb_norm = CheckButtons(ax_norm, [self._NORM_LABEL, self._SMOOTH_LABEL],
-                                    [self.normalize, self.smooth])
+        self.cb_smooth = CheckButtons(ax_smooth, [self._SMOOTH_LABEL], [self.smooth])
+        self.btn_norm = Button(ax_norm, self._norm_label())
         self.btn_save = Button(ax_save, 'Save')
         if has_toggle:
-            self.btn_data = Button(self.fig.add_subplot(side_gs[1, 0]), self._data_label())
+            self.btn_data = Button(self.fig.add_subplot(side_gs[2, 0]), self._data_label())
             self.btn_data.on_clicked(self._on_data)
 
         self.tb_cmap.on_submit(self._on_cmap)
-        self.cb_norm.on_clicked(self._on_normalize)
+        self.cb_smooth.on_clicked(self._on_smooth)
+        self.btn_norm.on_clicked(self._on_normalize)
         self.btn_save.on_clicked(self._save)
 
         self._draw()
@@ -352,8 +354,10 @@ class BfieldContourBuilder:
             data = _savgol_along(data, 'energy', self.smooth_window, self.SMOOTH_POLYORDER)
         lo, hi = self.erange.range
         cropped = data.sel(energy=slice(lo, hi))
-        if self.normalize:
+        if self.normalize == 'global':
             cropped = cropped / float(data.max())
+        elif self.normalize == 'spectrum':
+            cropped = cropped / cropped.max('energy')
         return cropped
 
     def _draw(self):
@@ -368,7 +372,9 @@ class BfieldContourBuilder:
         label = 'Intensity'
         if self.variable == 'subtracted':
             label += ', baseline-subtracted'
-        label += ' (normalized)' if self.normalize else ' (arb. units)'
+        label += {'off': ' (arb. units)',
+                  'global': ' (normalized)',
+                  'spectrum': ' (normalized per spectrum)'}[self.normalize]
         if self.smooth:
             label += f'\nS-G smoothed, {self.smooth_window} pts'
         self._cbar.set_label(label)
@@ -385,15 +391,22 @@ class BfieldContourBuilder:
         self.cmap = text
         self._draw()
 
-    _NORM_LABEL = 'Normalize to\nglobal max'
     _SMOOTH_LABEL = 'Smooth (S-G)'
+    _NORMS = ('off', 'global', 'spectrum')
+    _NORM_NAMES = {'off': 'Off', 'global': 'Global max', 'spectrum': 'Per spectrum'}
 
-    def _on_normalize(self, label):
-        # One CheckButtons widget holds both toggles; dispatch on the clicked label.
-        if label == self._SMOOTH_LABEL:
-            self.smooth = not self.smooth
-        else:
-            self.normalize = not self.normalize
+    def _norm_label(self) -> str:
+        return f"Normalize: {self._NORM_NAMES[self.normalize]} ▾"
+
+    def _on_normalize(self, _event):
+        # Cycle to the next normalization mode and relabel the button.
+        i = self._NORMS.index(self.normalize)
+        self.normalize = self._NORMS[(i + 1) % len(self._NORMS)]
+        self.btn_norm.label.set_text(self._norm_label())
+        self._draw()
+
+    def _on_smooth(self, _label):
+        self.smooth = not self.smooth
         self._draw()
 
     def _on_window(self, text):
@@ -1050,6 +1063,87 @@ class PLFitter:
 def load_fit_results(csv_path: Path) -> pd.DataFrame:
     """Load fit_results.csv produced by PLFitter into a DataFrame."""
     return pd.read_csv(csv_path)
+
+
+_SPECTRUM_KEYS = ['sample', 'spot', 'filename']   # filenames repeat across sweeps
+
+
+def _latest_saves(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop superseded fits from fit_results.csv rows.
+
+    The CSV is append-only, so a spectrum saved more than once has several
+    blocks of rows (each block starts at peak_index 0); keep only the last.
+    """
+    data = df.copy()
+    save = (data['peak_index'] == 0).cumsum()
+    # Key columns can be blank (NaN) in the CSV; dropna=False keeps those groups.
+    latest = save.groupby([data[k] for k in _SPECTRUM_KEYS], dropna=False).transform('max')
+    return data[save == latest]
+
+
+def track_peak(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Follow one peak through each field sweep: one row per fitted spectrum.
+
+    For each (sample, spot), the starting peak is the largest-amplitude peak
+    at the field closest to 0 (warns if no B = 0 spectrum). From there, walk
+    outward through the fields in each direction, taking at each field the
+    peak nearest in energy to the one tracked at the previous field. Spectra
+    sharing a field are each matched to that previous energy. Only the
+    latest save of each spectrum is used.
+    """
+    data = _latest_saves(df)
+    tracked = []
+    for (sample, spot), sweep in data.groupby(['sample', 'spot'], dropna=False):
+        sweep = sweep.dropna(subset=['field'])
+        if sweep.empty:
+            continue
+        fields = np.sort(sweep['field'].unique())
+        f0 = fields[np.argmin(np.abs(fields))]
+        if f0 != 0:
+            warnings.warn(f"{sample} / {spot}: no B = 0 spectrum; tracking from {f0} T.")
+        at_f0 = sweep[sweep['field'] == f0]
+        start = at_f0.loc[at_f0['amplitude'].idxmax()]
+
+        for direction in (fields[fields > f0], fields[fields < f0][::-1], [f0]):
+            ref = start['energy']
+            for f in direction:
+                chosen = []
+                for _, spectrum in sweep[sweep['field'] == f].groupby('filename'):
+                    chosen.append(spectrum.loc[(spectrum['energy'] - ref).abs().idxmin()])
+                tracked.extend(chosen)
+                ref = np.mean([row['energy'] for row in chosen])
+    if not tracked:
+        return data.iloc[0:0]
+    return pd.DataFrame(tracked).sort_values(['sample', 'spot', 'field']).reset_index(drop=True)
+
+
+def brightest_point(sweeps: list[Path], variable: str = 'raw',
+                    emin: float | None = None, emax: float | None = None) -> pd.DataFrame:
+    """
+    Energy of the highest-intensity data point in each spectrum, vs. field.
+
+    sweeps: sweep folders (raw CSV or processed .nc), one per sample/sweep.
+    variable: 'raw' or 'subtracted' (processed .nc only). emin/emax optionally
+    restrict the search to an energy window (eV). No fitting or smoothing:
+    the result is the argmax of the data itself, so it is noise-limited and
+    quantized to the energy grid.
+
+    Returns one row per spectrum: sample, spot, field, energy, intensity —
+    plottable with plot_peak_param(..., 'field', 'energy', group_by='sample').
+    """
+    rows = []
+    for sweep in sweeps:
+        bmap = _load_bfield_map(sweep, variable).sel(energy=slice(emin, emax))
+        imax = bmap.argmax('energy')
+        for field, energy, intensity in zip(bmap['field'].values,
+                                            bmap['energy'][imax].values,
+                                            bmap.isel(energy=imax).values):
+            rows.append({'sample': bmap.attrs.get('sample', Path(sweep).name),
+                         'spot': bmap.attrs.get('spot', ''),
+                         'field': field, 'energy': energy, 'intensity': intensity})
+    return pd.DataFrame(rows)
 
 
 def plot_peak_param(df: pd.DataFrame, x_col: str, y_col: str,

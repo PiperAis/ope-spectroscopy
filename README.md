@@ -162,7 +162,7 @@ python /path/to/scripts/steady_state_driver.py --project CrSBr-3 --mode contour-
 
 Opens a directory browser in the project's `pl_dir` — pick the date subfolder containing the B-field series. Pass `--files` to skip the browser — either a single directory, or an explicit list of CSV paths.
 
-An interactive matplotlib window opens with a heatmap of PL intensity vs. energy and magnetic field (field parsed from each filename), plus live controls: colormap name, lower/upper energy bound (eV), and a toggle to normalize all spectra against the dataset's global max. **Save** writes the current figure to `processed_pl_dir/<sample>_bfield_contour.png`.
+An interactive matplotlib window opens with a heatmap of PL intensity vs. energy and magnetic field (field parsed from each filename), plus live controls: colormap name, lower/upper energy bound (eV), and a **Normalize** button that cycles Off → Global max (all spectra against the dataset's max) → Per spectrum (each spectrum against its own max within the energy window). **Save** writes the current figure to `processed_pl_dir/<sample>_bfield_contour.png`.
 
 After fitting, open `steady_state_driver.py` in VS Code (or your Python environment of choice) and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
 
