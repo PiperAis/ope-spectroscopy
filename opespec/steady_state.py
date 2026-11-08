@@ -126,9 +126,11 @@ class _EnergyRangeControl:
         lo, hi = sorted((self.emin, self.emax))
         return lo, hi
 
-    def set_data_bounds(self, lo: float, hi: float):
-        """Set the clamp limits. First call: range = full data range.
-        Later calls: keep the current range, clamped to the new limits."""
+    def set_data_bounds(self, data: xr.DataArray):
+        """Set the clamp limits to data's energy extent. First call: range =
+        full data range. Later calls: keep the current range, clamped to the
+        new limits."""
+        lo, hi = float(data.energy.min()), float(data.energy.max())
         self._bounds = (lo, hi)
         if self.emin is None or self.emax is None:
             self.emin, self.emax = lo, hi
@@ -630,8 +632,7 @@ class PLFitter:
 
         # First file: full data range. Later files: keep the previous range,
         # clamped in case this file covers less energy.
-        self.erange.set_data_bounds(float(self.data.energy.min()),
-                                    float(self.data.energy.max()))
+        self.erange.set_data_bounds(self.data)
         if state is not None:
             self.erange.set_range(*state['range'])
             self.baseline = state['baseline']

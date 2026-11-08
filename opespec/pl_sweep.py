@@ -190,8 +190,7 @@ class SweepContourBuilder:
 
         self.tb_cmap = TextBox(ax_cmap, '', initial=self.cmap)
         self.erange = _EnergyRangeControl(ax_emin, ax_emax, on_change=self._draw)
-        self.erange.set_data_bounds(float(self.data.energy.min()),
-                                    float(self.data.energy.max()))
+        self.erange.set_data_bounds(self.data)
         if 'fit_emin' in self.data.attrs:
             # Open on the fitted window, not on extrapolated baseline.
             self.erange.set_range(self.data.attrs['fit_emin'], self.data.attrs['fit_emax'])
@@ -229,8 +228,7 @@ class SweepContourBuilder:
     def _on_data(self, variable: str):
         # Switch raw ↔ subtracted; keep the E range (clamped to the new map).
         self.variable = variable
-        self.erange.set_data_bounds(float(self.data.energy.min()),
-                                    float(self.data.energy.max()))
+        self.erange.set_data_bounds(self.data)
         self._draw()
 
     def _current_data(self):
