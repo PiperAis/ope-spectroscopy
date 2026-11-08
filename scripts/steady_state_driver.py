@@ -50,7 +50,7 @@ COMPARISON PLOTS — run the #%% cells below interactively in VS Code
 # ---- Imports and config (uncomment and run this cell first for interactive use) ---- #
 
 from opespec.steady_state import PLFitter, load_fit_results, plot_peak_param, track_peak
-from opespec.pl_sweep import BfieldContourBuilder, brightest_point
+from opespec.pl_sweep import SweepContourBuilder, brightest_point
 from opespec.utilities import load_config, select_files, select_directory
 
 ## Set project name here for interactive cell use:
@@ -110,7 +110,7 @@ if __name__ == "__main__":
             if not files:
                 raise SystemExit("No directory selected.")
         print("Opening contour-plot builder...")
-        builder = BfieldContourBuilder(files, output_dir=Path(cfg['processed_pl_dir']))
+        builder = SweepContourBuilder(files, output_dir=Path(cfg['processed_pl_dir']))
         builder.run()
 
     if args.mode == 'fit':

@@ -1,14 +1,21 @@
 """
-PL sweeps: a set of steady-state spectra taken while one variable (e.g.
-magnetic field) is stepped, combined into one 2D (sweep, energy) map.
+PL sweeps: a set of steady-state spectra taken while one variable (magnetic
+field or temperature) is stepped, combined into one 2D (sweep, energy) map.
 
 Key components:
-- _load_bfield_map: load a sweep folder (raw CSVs or processed .nc) into a
+- SWEEPS: the supported sweep variables (attr name → axis label, units,
+  output-filename tag)
+- _load_sweep_map: load a sweep folder (raw CSVs or processed .nc) into a
   2D DataArray sorted by the sweep variable
-- BfieldContourBuilder: interactive heatmap builder for PL intensity vs
-  energy and B-field — colormap, energy bounds, and normalization live,
-  save to PNG when done
-- brightest_point: energy of each spectrum's highest data point vs. field
+- SweepContourBuilder: interactive heatmap builder for PL intensity vs
+  energy and the sweep variable — colormap, energy bounds, and normalization
+  live, save to PNG when done
+- brightest_point: energy of each spectrum's highest data point vs. the sweep variable
+
+Rules: the sweep variable is always passed explicitly (sweep='field' by
+default) — never inferred from the data, since a folder can vary in more
+than one. Each spectrum's value comes from its attrs (filename /
+metadata.txt via utilities.get_metadata). No paths live here; callers pass them.
 
 Single-spectrum loading, fitting and fit-result comparison live in
 steady_state; this module builds on its loader and GUI helpers.
@@ -31,6 +38,19 @@ from .steady_state import load_pl_data, _spectrum_paths, _EnergyRangeControl
 
 xr.set_options(keep_attrs=True)
 
+# Sweep variable (a spectrum attr from utilities.get_metadata) → axis label,
+# units, and the tag used in saved contour filenames.
+SWEEPS = {
+    'field':       {'long_name': 'Magnetic Field', 'units': 'T', 'tag': 'bfield'},
+    'temperature': {'long_name': 'Temperature',    'units': 'K', 'tag': 'temperature'},
+}
+
+
+def _check_sweep(sweep: str) -> dict:
+    if sweep not in SWEEPS:
+        raise ValueError(f"Unknown sweep variable {sweep!r}; options: {list(SWEEPS)}")
+    return SWEEPS[sweep]
+
 
 def _has_variable(filepath: Path, variable: str) -> bool:
     """True if filepath is a processed .nc containing `variable`."""
@@ -40,43 +60,48 @@ def _has_variable(filepath: Path, variable: str) -> bool:
         return variable in ds.data_vars
 
 
-def _load_bfield_map(files: Path | list[Path], variable: str = 'raw') -> xr.DataArray:
+def _load_sweep_map(files: Path | list[Path], variable: str = 'raw',
+                    sweep: str = 'field') -> xr.DataArray:
     """
-    Loads a set of PL spectra into one 2D (field, energy) DataArray.
+    Loads a set of PL spectra into one 2D (sweep, energy) DataArray.
 
     files: a directory (its CSV / processed .nc files are used) or an explicit
-    list, one spectrum per field value. variable: 'raw', or 'subtracted' /
-    'baseline' from processed .nc files. Field for each comes from attrs
-    (filename / metadata.txt). Sorted by field value (not acquisition order),
-    since B-field sweeps commonly ramp up then back down through zero.
+    list, one spectrum per sweep value. variable: 'raw', or 'subtracted' /
+    'baseline' from processed .nc files. sweep: a key of SWEEPS ('field' or
+    'temperature'); each spectrum's value comes from its attrs (filename /
+    metadata.txt). Sorted by sweep value (not acquisition order), since
+    B-field sweeps commonly ramp up then back down through zero.
 
+    The sweep attr becomes the coordinate; other metadata attrs (e.g.
+    temperature in a field sweep) are taken from the first spectrum.
     For processed spectra, attrs fit_emin/fit_emax on the map are the
     intersection of the individual fit windows.
     """
+    info = _check_sweep(sweep)
     spectra, windows = [], []
     for filepath in _spectrum_paths(files):
         da = load_pl_data(filepath, variable=variable)
-        field = da.attrs['field']
-        if field is None:
-            warnings.warn(f"Could not parse magnetic field from filename or "
+        value = da.attrs[sweep]
+        if value is None:
+            warnings.warn(f"Could not parse {info['long_name'].lower()} from filename or "
                           f"{utilities.METADATA_FILENAME}: {filepath.name}")
         if 'fit_emin' in da.attrs:
             windows.append((da.attrs['fit_emin'], da.attrs['fit_emax']))
-        spectra.append(da.expand_dims(field=[field]))
+        spectra.append(da.expand_dims({sweep: [value]}))
 
-    bfield_map = xr.concat(spectra, dim="field").sortby("field")
+    sweep_map = xr.concat(spectra, dim=sweep).sortby(sweep)
     # Drop per-spectrum attrs (now a coordinate, or specific to one fit).
-    for key in list(bfield_map.attrs):
-        if key in ('field', 'filename', 'lineshape', 'fit_emin', 'fit_emax',
+    for key in list(sweep_map.attrs):
+        if key in (sweep, 'filename', 'lineshape', 'fit_emin', 'fit_emax',
                    'fit_number', 'rmse', 'r_squared') \
                 or key.startswith(('peak_', 'baseline_')):
-            del bfield_map.attrs[key]
+            del sweep_map.attrs[key]
     if windows and len(windows) == len(spectra):
-        bfield_map.attrs['fit_emin'] = max(w[0] for w in windows)
-        bfield_map.attrs['fit_emax'] = min(w[1] for w in windows)
-    bfield_map['field'].attrs = {'long_name': 'Magnetic Field', 'units': 'T'}
-    bfield_map['energy'].attrs['long_name'] = 'Energy'
-    return bfield_map
+        sweep_map.attrs['fit_emin'] = max(w[0] for w in windows)
+        sweep_map.attrs['fit_emax'] = min(w[1] for w in windows)
+    sweep_map[sweep].attrs = {'long_name': info['long_name'], 'units': info['units']}
+    sweep_map['energy'].attrs['long_name'] = 'Energy'
+    return sweep_map
 
 
 def _savgol_along(da: xr.DataArray, dim: str, window: int, polyorder: int) -> xr.DataArray:
@@ -89,10 +114,10 @@ def _savgol_along(da: xr.DataArray, dim: str, window: int, polyorder: int) -> xr
                           input_core_dims=[[dim]], output_core_dims=[[dim]], keep_attrs=True)
 
 
-class BfieldContourBuilder:
+class SweepContourBuilder:
     """
-    Interactive contour (heatmap) builder for PL intensity vs. energy and
-    magnetic field.
+    Interactive contour (heatmap) builder for PL intensity vs. energy and a
+    sweep variable: sweep='field' (default) or 'temperature' (see SWEEPS).
 
     Live controls: colormap, lower/upper energy bound, a "Normalize" button
     that cycles Off → Global max (all spectra against the dataset's max) →
@@ -106,7 +131,11 @@ class BfieldContourBuilder:
 
     Usage:
         files = select_directory(Path(cfg['processed_pl_dir']))
-        BfieldContourBuilder(files, output_dir=Path(cfg['processed_pl_dir'])).run()
+        SweepContourBuilder(files, output_dir=Path(cfg['processed_pl_dir'])).run()
+        SweepContourBuilder(files, output_dir=..., sweep='temperature').run()
+
+    Save writes <output_dir>/<sample>_<tag>_contour[_subtracted][_sg<N>].png,
+    with <tag> from SWEEPS (e.g. 'bfield').
     """
 
     DEFAULT_CMAP = 'inferno'
@@ -114,12 +143,14 @@ class BfieldContourBuilder:
     SMOOTH_POLYORDER = 3
     DEFAULT_SMOOTH_WINDOW = 11   # points along energy; must be odd and > polyorder
 
-    def __init__(self, files: Path | list[Path], output_dir: Path):
+    def __init__(self, files: Path | list[Path], output_dir: Path, sweep: str = 'field'):
+        _check_sweep(sweep)
+        self.sweep = sweep
         paths = _spectrum_paths(files)
-        self.maps = {'raw': _load_bfield_map(paths, 'raw')}
+        self.maps = {'raw': _load_sweep_map(paths, 'raw', sweep)}
         unfitted = [p.name for p in paths if not _has_variable(p, 'subtracted')]
         if not unfitted:
-            self.maps['subtracted'] = _load_bfield_map(paths, 'subtracted')
+            self.maps['subtracted'] = _load_sweep_map(paths, 'subtracted', sweep)
         elif any(p.suffix == '.nc' for p in paths):
             warnings.warn(f"{len(unfitted)} spectra have no baseline-subtracted data "
                           f"(not fitted/saved yet), showing raw only: {', '.join(unfitted)}")
@@ -191,7 +222,7 @@ class BfieldContourBuilder:
 
     @property
     def data(self) -> xr.DataArray:
-        """The (field, energy) map currently shown: raw or baseline-subtracted."""
+        """The (sweep, energy) map currently shown: raw or baseline-subtracted."""
         return self.maps[self.variable]
 
     def _data_label(self) -> str:
@@ -226,7 +257,7 @@ class BfieldContourBuilder:
             self._cbar = None
         self.ax.cla()
         data = self._current_data()
-        result = data.plot.contourf(x='field', y='energy', cmap=self.cmap,
+        result = data.plot.contourf(x=self.sweep, y='energy', cmap=self.cmap,
                                      ax=self.ax, add_colorbar=False)
         self._cbar = self.fig.colorbar(result, ax=self.ax)
         label = 'Intensity'
@@ -291,11 +322,12 @@ class BfieldContourBuilder:
             self._draw()
 
     def _save(self, _event):
-        sample = self.data.attrs.get('sample', 'bfield')
+        tag = SWEEPS[self.sweep]['tag']
+        sample = self.data.attrs.get('sample', tag)
         suffix = '_subtracted' if self.variable == 'subtracted' else ''
         if self.smooth:
             suffix += f'_sg{self.smooth_window}'
-        out_path = self.output_dir / f"{sample.replace(' ', '')}_bfield_contour{suffix}.png"
+        out_path = self.output_dir / f"{sample.replace(' ', '')}_{tag}_contour{suffix}.png"
 
         self.fig.canvas.draw()
         renderer = self.fig.canvas.get_renderer()  # pyright: ignore[reportAttributeAccessIssue]
@@ -309,28 +341,30 @@ class BfieldContourBuilder:
         print(f"Saved -> {out_path}")
 
 
-def brightest_point(sweeps: list[Path], variable: str = 'raw',
-                    emin: float | None = None, emax: float | None = None) -> pd.DataFrame:
+def brightest_point(folders: list[Path], variable: str = 'raw',
+                    emin: float | None = None, emax: float | None = None,
+                    sweep: str = 'field') -> pd.DataFrame:
     """
-    Energy of the highest-intensity data point in each spectrum, vs. field.
+    Energy of the highest-intensity data point in each spectrum, vs. the
+    sweep variable (sweep='field' or 'temperature').
 
-    sweeps: sweep folders (raw CSV or processed .nc), one per sample/sweep.
+    folders: sweep folders (raw CSV or processed .nc), one per sample/sweep.
     variable: 'raw' or 'subtracted' (processed .nc only). emin/emax optionally
     restrict the search to an energy window (eV). No fitting or smoothing:
     the result is the argmax of the data itself, so it is noise-limited and
     quantized to the energy grid.
 
-    Returns one row per spectrum: sample, spot, field, energy, intensity —
+    Returns one row per spectrum: sample, spot, <sweep>, energy, intensity —
     plottable with plot_peak_param(..., 'field', 'energy', group_by='sample').
     """
     rows = []
-    for sweep in sweeps:
-        bmap = _load_bfield_map(sweep, variable).sel(energy=slice(emin, emax))
-        imax = bmap.argmax('energy')
-        for field, energy, intensity in zip(bmap['field'].values,
-                                            bmap['energy'][imax].values,
-                                            bmap.isel(energy=imax).values):
-            rows.append({'sample': bmap.attrs.get('sample', Path(sweep).name),
-                         'spot': bmap.attrs.get('spot', ''),
-                         'field': field, 'energy': energy, 'intensity': intensity})
+    for folder in folders:
+        smap = _load_sweep_map(folder, variable, sweep).sel(energy=slice(emin, emax))
+        imax = smap.argmax('energy')
+        for value, energy, intensity in zip(smap[sweep].values,
+                                            smap['energy'][imax].values,
+                                            smap.isel(energy=imax).values):
+            rows.append({'sample': smap.attrs.get('sample', Path(folder).name),
+                         'spot': smap.attrs.get('spot', ''),
+                         sweep: value, 'energy': energy, 'intensity': intensity})
     return pd.DataFrame(rows)
