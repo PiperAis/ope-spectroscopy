@@ -173,22 +173,23 @@ Each fitter run is a new fit session, and `n` (= `fit_number`) counts up from th
 
 **Next →** advances to the next file and closes the window after the last one. **← Back** (or Next onto a file you've already visited) restores that file's markers, fit, E range and baseline, so you can save a forgotten fit or adjust and refit it. Run the fitter as a plain script, not in a `#%%` cell; the Jupyter kernel intercepts matplotlib clicks.
 
-### PL vs. B-field contour plot
+### PL contour plot (vs. B-field or temperature)
 
 ```bash
 python /path/to/scripts/steady_state_driver.py --project CrSBr-3 --mode contour-plot
+python /path/to/scripts/steady_state_driver.py --project CrSBr-3 --mode contour-plot --sweep temperature
 ```
 
 Opens a directory browser in the project's `processed_pl_dir`. Pick a sweep folder of fitted `.nc` spectra. A raw CSV sweep folder also works, but shows raw data only. Pass `--files` to skip the browser, with either a single directory or an explicit list of spectrum paths.
 
-An interactive matplotlib window opens with a heatmap of PL intensity vs. energy and magnetic field. The field comes from each filename or the folder's `metadata.txt`. Live controls:
+An interactive matplotlib window opens with a heatmap of PL intensity vs. energy and the sweep variable: magnetic field by default, or temperature with `--sweep temperature`. Each spectrum's value comes from its filename or the folder's `metadata.txt`. Live controls:
 
 - colormap name
 - lower/upper energy bound (eV)
 - a **Normalize** button that cycles Off → Global max (all spectra against the dataset's max) → Per spectrum (each spectrum against its own max within the energy window)
 - optional Savitzky–Golay smoothing along energy (checkbox + window in points). This is display only: the data isn't changed.
 
-When every spectrum in the folder has been fitted, the plot opens on baseline-subtracted data over the shared fit window, and a **Data** button switches to raw. **Save** writes the current figure to `processed_pl_dir/<sample>_bfield_contour[_subtracted][_sg<N>].png`.
+When every spectrum in the folder has been fitted, the plot opens on baseline-subtracted data over the shared fit window, and a **Data** button switches to raw. **Save** writes the current figure to `processed_pl_dir/<sample>_<tag>_contour[_subtracted][_sg<N>].png`, where `<tag>` is `bfield` or `temperature`.
 
 After fitting, open `steady_state_driver.py` in VS Code (or your Python environment of choice) and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
 
@@ -200,7 +201,8 @@ After fitting, open `steady_state_driver.py` in VS Code (or your Python environm
 |---|---|
 | `trr_dataset` | xarray accessor (`trrxr`) for TRR data; loading and dataset-level operations |
 | `processing_state` | `ProcessingState` — linear pipeline orchestrator for TRR (noise → normalize → subtract → FFT) |
-| `steady_state` | `PLFitter` interactive fitter; `load_fit_results` / `plot_peak_param` for cross-dataset comparison; `BfieldContourBuilder` interactive contour-plot builder; batch fitting helpers |
+| `steady_state` | `load_pl_data`; `PLFitter` interactive fitter; `load_fit_results` / `plot_peak_param` / `track_peak` for cross-dataset comparison |
+| `pl_sweep` | Spectra vs. a sweep variable (`SWEEPS`: field or temperature): `SweepContourBuilder` interactive contour-plot builder; `brightest_point` |
 | `fitting_functions` | Shared fitting primitives (exponential decay, Lorentzian, Gaussian, peak finding) |
 | `fft_functions` | FFT-based noise analysis utilities |
 | `noise_remover` | Noise removal step used in the TRR pipeline |

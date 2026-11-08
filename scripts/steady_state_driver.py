@@ -26,8 +26,9 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
       <processed_pl_dir>/<sweep>/<stem>.nc        raw / baseline / subtracted data
                                                   (+ fit settings and results in attrs)
 
-CONTOUR PLOT — PL intensity vs. energy and B-field:
+CONTOUR PLOT — PL intensity vs. energy and B-field (or temperature):
     python scripts/steady_state_driver.py --project MyExperiment --mode contour-plot
+    python scripts/steady_state_driver.py --project MyExperiment --mode contour-plot --sweep temperature
 
     A directory browser opens in the project's processed PL directory — pick
     a sweep folder of fitted .nc spectra. A raw CSV sweep folder also works
@@ -40,7 +41,8 @@ CONTOUR PLOT — PL intensity vs. energy and B-field:
     display only — saved data is untouched; saved PNG gets an _sg<N> suffix), and
     — when every spectrum in the folder has been fitted — a "Data" button to
     switch between baseline-subtracted (default, opens on the fit window) and
-    raw. Save writes <processed_pl_dir>/<sample>_bfield_contour[_subtracted].png.
+    raw. Save writes <processed_pl_dir>/<sample>_<tag>_contour[_subtracted].png
+    (<tag> = bfield or temperature).
 
 COMPARISON PLOTS — run the #%% cells below interactively in VS Code
     after fitting to build up fit_results.csv.
@@ -76,6 +78,7 @@ from opespec.utilities import load_config, select_files, select_directory
 # sweeps = [Path(cfg['processed_pl_dir']) / d for d in ['2026-10-27', '2026-11-03']]
 # plot_peak_param(brightest_point(sweeps), x_col='field', y_col='energy', group_by='sample',
 #                 title='Brightest-point energy vs field')
+# For a temperature sweep: brightest_point(sweeps, sweep='temperature'), then x_col='temperature'.
 
 # Peak width vs temperature:
 # plot_peak_param(results, x_col='temperature', y_col='width', peak_index=0)
@@ -98,6 +101,8 @@ if __name__ == "__main__":
                         help="Fit mode: pick individual files instead of a whole folder")
     parser.add_argument('--mode', choices=['fit', 'contour-plot'], default='fit',
                         help='What type of processing to execute. Options: fit, contour-plot.')
+    parser.add_argument('--sweep', choices=['field', 'temperature'], default='field',
+                        help="Contour-plot mode: the variable stepped across the sweep folder.")
     args = parser.parse_args()
 
     cfg = load_config(args.project)
@@ -110,7 +115,8 @@ if __name__ == "__main__":
             if not files:
                 raise SystemExit("No directory selected.")
         print("Opening contour-plot builder...")
-        builder = SweepContourBuilder(files, output_dir=Path(cfg['processed_pl_dir']))
+        builder = SweepContourBuilder(files, output_dir=Path(cfg['processed_pl_dir']),
+                                      sweep=args.sweep)
         builder.run()
 
     if args.mode == 'fit':

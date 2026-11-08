@@ -18,7 +18,7 @@ Read the file tree directly for what exists. What matters here is the *organizin
 - *Shared operations* → operation-modules (`utilities` for filename parsing + small helpers; `fitting_functions` for fitting primitives; `fft_functions`, `noise_remover`).
 - *Data operations on a dataset* → the `trrxr` xarray accessor in `trr_dataset`.
 - *Workflow orchestration* → its own module (`processing_state` for the TRR pipeline).
-- *Data-type-specific code* → that type's module (`pl_bfield`, `steady_state`).
+- *Data-type-specific code* → that type's module (`steady_state` for single PL spectra and fitting, `pl_sweep` for spectra vs. field/temperature).
 
 Module-specific intent and rules live in each file's header docstring — read those before modifying a module.
 
