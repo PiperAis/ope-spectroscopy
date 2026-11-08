@@ -34,7 +34,8 @@ CONTOUR PLOT — PL intensity vs. energy and B-field:
     (raw data only). Pass --files to skip the browser (a single directory,
     or an explicit list of spectrum paths).
 
-    Live controls: colormap, E min / E max (eV), normalize to global max,
+    Live controls: colormap, E min / E max (eV), a "Normalize" button cycling
+    Off → Global max → Per spectrum (each against its own max in the E window),
     Savitzky–Golay smoothing along energy (checkbox + window in points;
     display only — saved data is untouched; saved PNG gets an _sg<N> suffix), and
     — when every spectrum in the folder has been fitted — a "Data" button to
