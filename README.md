@@ -152,7 +152,18 @@ python /path/to/scripts/trr_driver.py --project CrSBr-3 --sync-obsidian
 python /path/to/scripts/steady_state_driver.py --project MyExperiment
 ```
 
-Opens a file browser in the project's `pl_dir` — navigate to a date subfolder and select one or more CSV files. An interactive matplotlib window opens: left-click to place peak markers, right-click to remove them, zoom to set the fit range, then choose **Fit Gaussian** or **Fit Lorentzian**. **Save** writes:
+Opens a folder browser in the project's `pl_dir`. Pick a sweep (date) folder and every spectrum in it is queued in filename order; `metadata.txt` and other non-spectrum files are skipped. Pass `--pick-files` to choose individual files instead, or `--files` to skip the browser.
+
+An interactive matplotlib window opens:
+
+- Left-click to place peak markers; right-click to remove one.
+- **E min / E max** boxes set the fit window. It carries over to the next file. Toolbar zoom only changes the view, not the fit.
+- **Baseline** cycles constant ↔ linear. The baseline is fit together with the peaks, and the view shows the baseline-subtracted data.
+- **Carry peaks to next file** seeds the next spectrum's markers from this one's fitted peaks.
+- **Fit Gaussian** / **Fit Lorentzian** run the fit. Results with 1σ errors, RMSE and R² print to the console.
+- The title shows whether the current fit has been saved.
+
+**Save** writes:
 
 - a row per peak to `processed_pl_dir/fit_results.csv`. Each row has 1σ errors, the fit window (`fit_emin`/`fit_emax`) and fit quality (`rmse`, `r_squared`), and is tagged with `experiment` (the sweep folder) and `fit_number`.
 - a clean fit-overlay PNG to `processed_pl_dir/<experiment>/plots/fits_<n>/<stem>_fit.png`.
@@ -160,7 +171,7 @@ Opens a file browser in the project's `pl_dir` — navigate to a date subfolder 
 
 Each fitter run is a new fit session, and `n` (= `fit_number`) counts up from the highest existing `fits_<n>` folder for that experiment. Re-saving a spectrum in the same session replaces its CSV rows and plot. Earlier sessions are kept, so iterations can be compared. `track_peak` uses each spectrum's latest fit by default; pass `fit_number=` to use a specific session.
 
-**Next →** advances to the next file and closes when all files are done.
+**Next →** advances to the next file and closes the window after the last one. **← Back** (or Next onto a file you've already visited) restores that file's markers, fit, E range and baseline, so you can save a forgotten fit or adjust and refit it. Run the fitter as a plain script, not in a `#%%` cell; the Jupyter kernel intercepts matplotlib clicks.
 
 ### PL vs. B-field contour plot
 
@@ -168,9 +179,16 @@ Each fitter run is a new fit session, and `n` (= `fit_number`) counts up from th
 python /path/to/scripts/steady_state_driver.py --project CrSBr-3 --mode contour-plot
 ```
 
-Opens a directory browser in the project's `pl_dir` — pick the date subfolder containing the B-field series. Pass `--files` to skip the browser — either a single directory, or an explicit list of CSV paths.
+Opens a directory browser in the project's `processed_pl_dir`. Pick a sweep folder of fitted `.nc` spectra. A raw CSV sweep folder also works, but shows raw data only. Pass `--files` to skip the browser, with either a single directory or an explicit list of spectrum paths.
 
-An interactive matplotlib window opens with a heatmap of PL intensity vs. energy and magnetic field (field parsed from each filename), plus live controls: colormap name, lower/upper energy bound (eV), and a **Normalize** button that cycles Off → Global max (all spectra against the dataset's max) → Per spectrum (each spectrum against its own max within the energy window). **Save** writes the current figure to `processed_pl_dir/<sample>_bfield_contour.png`.
+An interactive matplotlib window opens with a heatmap of PL intensity vs. energy and magnetic field. The field comes from each filename or the folder's `metadata.txt`. Live controls:
+
+- colormap name
+- lower/upper energy bound (eV)
+- a **Normalize** button that cycles Off → Global max (all spectra against the dataset's max) → Per spectrum (each spectrum against its own max within the energy window)
+- optional Savitzky–Golay smoothing along energy (checkbox + window in points). This is display only: the data isn't changed.
+
+When every spectrum in the folder has been fitted, the plot opens on baseline-subtracted data over the shared fit window, and a **Data** button switches to raw. **Save** writes the current figure to `processed_pl_dir/<sample>_bfield_contour[_subtracted][_sg<N>].png`.
 
 After fitting, open `steady_state_driver.py` in VS Code (or your Python environment of choice) and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
 
