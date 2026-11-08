@@ -104,6 +104,22 @@ def param_covariance(jac, resid) -> np.ndarray:
     js = jac / d
     return np.linalg.pinv(js.T @ js) / np.outer(d, d) * s2
 
+
+def fit_quality(resid, y, n_params: int) -> dict:
+    """
+    Goodness of fit from a least-squares solution's residuals and the fitted data.
+    No per-point σ is available, so this is RMSE (√(SSE/dof)) and R², not χ².
+    Returns n_points, dof, rmse and r_squared (NaN when dof ≤ 0 or y is constant).
+    """
+    y = np.asarray(y, dtype=float)
+    n_points = len(y)
+    dof = n_points - n_params
+    sse = float(np.sum(np.asarray(resid) ** 2))
+    sst = float(np.sum((y - y.mean()) ** 2))
+    rmse = float(np.sqrt(sse / dof)) if dof > 0 else np.nan
+    r_squared = 1 - sse / sst if dof > 0 and sst > 0 else np.nan
+    return {'n_points': n_points, 'dof': dof, 'rmse': rmse, 'r_squared': r_squared}
+
 # lineshape name -> (model function, sum-of-squares objective)
 LINESHAPES = {
     'gaussian':   (Gaussian, diffG),

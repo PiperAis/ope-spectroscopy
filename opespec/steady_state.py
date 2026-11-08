@@ -484,6 +484,60 @@ def _eval_baseline(bl: dict, x):
     return bl['c0'] + bl['c1'] * (np.asarray(x) - bl['xc'])
 
 
+def _initial_baseline(x: np.ndarray, y: np.ndarray, baseline: str):
+    """
+    Initial guess and bounds for the baseline parameters, from the medians of
+    the window's edge regions (robust to noise).
+
+    Returns (params, bounds, xc): params is [c0] ('constant') or [c0, c1]
+    ('linear') for b(x) = c0 [+ c1·(x − xc)], xc = window center.
+    """
+    xc = 0.5 * (float(x.min()) + float(x.max()))
+    edge = max(1, len(y) // 10)
+    xa, ya = float(np.mean(x[:edge])), float(np.median(y[:edge]))
+    xb, yb = float(np.mean(x[-edge:])), float(np.median(y[-edge:]))
+    if baseline == 'linear':
+        c1 = (yb - ya) / (xb - xa) if xb != xa else 0.0
+        c0 = ya + c1 * (xc - xa)
+        return [c0, c1], [(float(y.min()), float(y.max())), (None, None)], xc
+    c0 = float(np.median(np.concatenate([y[:edge], y[-edge:]])))
+    return [c0], [(float(y.min()), float(y.max()))], xc
+
+
+def _peak_results(fit: np.ndarray, err: np.ndarray, cov: np.ndarray,
+                  lineshape: str, x: np.ndarray) -> list[dict]:
+    """
+    Per-peak results from fitted peak parameters (amp, center, width per peak)
+    and their 1σ errors / covariance: energy, width, amplitude, area (each with
+    _err) and the peak's curve 'y' over x.
+    """
+    fn, _ = ff.LINESHAPES[lineshape]
+    peaks = []
+    for j in range(len(fit) // 3):
+        ia, ie, iw = 3*j, 3*j + 1, 3*j + 2
+        amp    = abs(float(fit[ia]))
+        energy = float(fit[ie])
+        width  = abs(float(fit[iw]))
+        area   = ff.peak_area(lineshape, amp, width)
+        # area ∝ amp·width for both lineshapes → propagate with the amp–width covariance.
+        rel_var = ((err[ia] / amp) ** 2 + (err[iw] / width) ** 2
+                   + 2 * cov[ia, iw] / (amp * width)) if amp > 0 and width > 0 else np.nan
+        area_err = area * float(np.sqrt(max(rel_var, 0.0)))
+        # Stored unrounded (energy uncertainty can be ~1e-5 eV); round only for display.
+        peaks.append({
+            'energy':        energy,
+            'energy_err':    float(err[ie]),
+            'width':         width,
+            'width_err':     float(err[iw]),
+            'amplitude':     amp,
+            'amplitude_err': float(err[ia]),
+            'area':          float(area),
+            'area_err':      area_err,
+            'y':             fn(fit[3*j:3*(j+1)], x),
+        })
+    return peaks
+
+
 def _fit_spectrum(data: xr.DataArray, peak_positions: list,
                   lineshape: str, energy_range: tuple,
                   baseline: str = 'constant') -> dict | None:
@@ -508,18 +562,7 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
     y = da.values.astype(float)
 
     # Baseline is fit as extra parameter(s) alongside the peaks.
-    # Initial guess from the medians of the window's edge regions (robust to noise).
-    xc = 0.5 * (float(x.min()) + float(x.max()))
-    edge = max(1, len(y) // 10)
-    xa, ya = float(np.mean(x[:edge])), float(np.median(y[:edge]))
-    xb, yb = float(np.mean(x[-edge:])), float(np.median(y[-edge:]))
-    if baseline == 'linear':
-        c1 = (yb - ya) / (xb - xa) if xb != xa else 0.0
-        c0 = ya + c1 * (xc - xa)
-        bl0, bl_bounds = [c0, c1], [(float(y.min()), float(y.max())), (None, None)]
-    else:
-        c0 = float(np.median(np.concatenate([y[:edge], y[-edge:]])))
-        bl0, bl_bounds = [c0], [(float(y.min()), float(y.max()))]
+    bl0, bl_bounds, xc = _initial_baseline(x, y, baseline)
     k = len(bl0)
     bl_guess = _baseline_from_params(baseline, bl0, xc)
 
@@ -558,65 +601,14 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
         cov = ff.param_covariance(result.jac, result.fun)
         err = np.sqrt(np.clip(np.diag(cov), 0, None))
 
-        peaks = []
-        for j in range(len(peak_positions)):
-            ia, ie, iw = 3*j, 3*j + 1, 3*j + 2
-            amp    = abs(float(fit[ia]))
-            energy = float(fit[ie])
-            width  = abs(float(fit[iw]))
-            area   = ff.peak_area(lineshape, amp, width)
-            # area ∝ amp·width for both lineshapes → propagate with the amp–width covariance.
-            rel_var = ((err[ia] / amp) ** 2 + (err[iw] / width) ** 2
-                       + 2 * cov[ia, iw] / (amp * width)) if amp > 0 and width > 0 else np.nan
-            area_err = area * float(np.sqrt(max(rel_var, 0.0)))
-            # Stored unrounded (energy uncertainty can be ~1e-5 eV); round only for display.
-            peaks.append({
-                'energy':        energy,
-                'energy_err':    float(err[ie]),
-                'width':         width,
-                'width_err':     float(err[iw]),
-                'amplitude':     amp,
-                'amplitude_err': float(err[ia]),
-                'area':          float(area),
-                'area_err':      area_err,
-                'y':             fn(fit[3*j:3*(j+1)], x),
-            })
-
-        # Fit quality from the same residuals (no per-point σ, so RMSE + R², not χ²).
-        n_points = len(y)
-        dof = n_points - len(p0)
-        sse = float(np.sum(result.fun ** 2))
-        sst = float(np.sum((y - y.mean()) ** 2))
-        rmse = float(np.sqrt(sse / dof)) if dof > 0 else np.nan
-        r_squared = 1 - sse / sst if dof > 0 and sst > 0 else np.nan
-
-        return {'peaks': peaks, 'x_fit': x, 'y_total': fn(fit, x),
+        return {'peaks': _peak_results(fit, err, cov, lineshape, x),
+                'x_fit': x, 'y_total': fn(fit, x),
                 'y_data': y_sub, 'baseline': bl,
-                'n_points': n_points, 'dof': dof, 'rmse': rmse, 'r_squared': r_squared}
+                **ff.fit_quality(result.fun, y, len(p0))}
 
     except Exception as e:
         print(f"Fit error: {e}")
         return None
-
-
-def _append_rows_csv(csv_path: Path, df: pd.DataFrame):
-    """
-    Append rows to a CSV. If the existing file has different columns (an older
-    schema), merge by column name and rewrite it rather than appending rows that
-    don't line up with the header; columns missing on either side become blank.
-    """
-    if not csv_path.exists():
-        df.to_csv(csv_path, index=False)
-        return
-    existing_cols = list(pd.read_csv(csv_path, nrows=0).columns)
-    if existing_cols == list(df.columns):
-        df.to_csv(csv_path, mode='a', header=False, index=False)
-        return
-    merged = pd.concat([pd.read_csv(csv_path), df], ignore_index=True)
-    merged = merged[list(df.columns) + [c for c in merged.columns if c not in df.columns]]
-    merged.to_csv(csv_path, index=False)
-    print(f"Note: {csv_path.name} had an older column layout; merged and rewrote it "
-          f"(older rows have blank values in new columns).")
 
 
 def _row_keys(frame: pd.DataFrame, keys: list[str]) -> pd.MultiIndex:
@@ -633,9 +625,9 @@ def _row_keys(frame: pd.DataFrame, keys: list[str]) -> pd.MultiIndex:
 def _upsert_rows_csv(csv_path: Path, df: pd.DataFrame, keys: list[str]):
     """
     Write rows to a CSV, replacing any existing rows whose `keys` values match
-    a row in df (e.g. a re-saved fit). Other rows are kept. Columns are merged
-    by name as in _append_rows_csv: df's columns first, extras after, and
-    columns missing on either side become blank.
+    a row in df (e.g. a re-saved fit). Other rows are kept. If the existing file
+    has different columns (an older schema), they are merged by name: df's
+    columns first, extras after, and columns missing on either side become blank.
     """
     if not csv_path.exists():
         df.to_csv(csv_path, index=False)
@@ -693,6 +685,56 @@ def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, linesh
 
     path.parent.mkdir(parents=True, exist_ok=True)
     ds.to_netcdf(path, mode='w')
+
+
+def _fit_rows(filename: str, data: xr.DataArray, result: dict,
+              experiment: str, fit_number: int) -> list[dict]:
+    """fit_results.csv rows for one saved fit: one row per peak, with the
+    spectrum's metadata, fit settings and fit quality repeated on each."""
+    rows = []
+    for j, peak in enumerate(result['peaks']):
+        rows.append({
+            'filename':    filename,
+            'experiment':  experiment,
+            'fit_number':  fit_number,
+            'sample':      data.attrs.get('sample', ''),
+            'spot':        data.attrs.get('spot', ''),
+            'field':       data.attrs.get('field'),
+            'temperature': data.attrs.get('temperature'),
+            'lineshape':   result['lineshape'],
+            'baseline':    result['baseline']['type'],
+            'fit_emin':    float(np.min(result['x_fit'])),
+            'fit_emax':    float(np.max(result['x_fit'])),
+            'peak_index':  j,
+            'energy':        peak['energy'],
+            'energy_err':    peak['energy_err'],
+            'width':         peak['width'],
+            'width_err':     peak['width_err'],
+            'amplitude':     peak['amplitude'],
+            'amplitude_err': peak['amplitude_err'],
+            'area':          peak['area'],
+            'area_err':      peak['area_err'],
+            'n_points':    result['n_points'],
+            'dof':         result['dof'],
+            'rmse':        result['rmse'],
+            'r_squared':   result['r_squared'],
+        })
+    return rows
+
+
+def _save_fit_plot(path: Path, result: dict, title: str):
+    """Save a clean fit figure (no buttons or peak markers) to path: exactly the
+    baseline-subtracted data that was fit, plus the fit overlay."""
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(result['x_fit'], result['y_data'], color='black', lw=1.2, label='Data')
+    _plot_fit_overlay(ax, result)
+    ax.set_title(title)
+    ax.set_xlabel('Energy (eV)')
+    ax.set_ylabel('Intensity (arb. units)')
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
 
 
 def _plot_fit_overlay(ax: Axes, result: dict) -> list:
@@ -1026,68 +1068,27 @@ class PLFitter:
             return
 
         filepath = self.files[self.current_idx]
-        da = self.data
         result = self.fit_result
         experiment = filepath.parent.name
         fit_number = self._fit_number(experiment)
 
-        rows = []
-        for j, peak in enumerate(result['peaks']):
-            rows.append({
-                'filename':    filepath.name,
-                'experiment':  experiment,
-                'fit_number':  fit_number,
-                'sample':      da.attrs.get('sample', ''),
-                'spot':        da.attrs.get('spot', ''),
-                'field':       da.attrs.get('field'),
-                'temperature': da.attrs.get('temperature'),
-                'lineshape':   result['lineshape'],
-                'baseline':    result['baseline']['type'],
-                'fit_emin':    float(np.min(result['x_fit'])),
-                'fit_emax':    float(np.max(result['x_fit'])),
-                'peak_index':  j,
-                'energy':        peak['energy'],
-                'energy_err':    peak['energy_err'],
-                'width':         peak['width'],
-                'width_err':     peak['width_err'],
-                'amplitude':     peak['amplitude'],
-                'amplitude_err': peak['amplitude_err'],
-                'area':          peak['area'],
-                'area_err':      peak['area_err'],
-                'n_points':    result['n_points'],
-                'dof':         result['dof'],
-                'rmse':        result['rmse'],
-                'r_squared':   result['r_squared'],
-            })
-
         # One row set per (spectrum, fit session): re-saving in this session replaces it.
+        rows = _fit_rows(filepath.name, self.data, result, experiment, fit_number)
         csv_path = self.output_dir / 'fit_results.csv'
         _upsert_rows_csv(csv_path, pd.DataFrame(rows),
                          keys=['experiment', 'filename', 'fit_number'])
         print(f"Saved {len(rows)} peak(s) as fit {fit_number} → {csv_path}")
 
-        # Build a clean figure: no buttons, no peak markers.
-        # Plot exactly the (baseline-subtracted) data that was fit.
-        fig_save, ax_save = plt.subplots(figsize=(8, 5))
-        ax_save.plot(self.fit_result['x_fit'], self.fit_result['y_data'],
-                     color='black', lw=1.2, label='Data')
-        _plot_fit_overlay(ax_save, self.fit_result)
-        ax_save.set_title(f"{filepath.name} fit ({self.fit_result['baseline']['type']} baseline)")
-        ax_save.set_xlabel('Energy (eV)')
-        ax_save.set_ylabel('Intensity (arb. units)')
-        ax_save.legend(fontsize=8)
-        fig_save.tight_layout()
-
         plot_path = self._fits_dir(experiment) / (filepath.stem + '_fit.png')
-        fig_save.savefig(plot_path, dpi=150)
-        plt.close(fig_save)
+        _save_fit_plot(plot_path, result, title=f"{filepath.name} fit "
+                                                f"({result['baseline']['type']} baseline)")
         print(f"Plot → {plot_path}")
 
         # Processed spectrum (raw / baseline / subtracted) for the contour builder,
         # one .nc per spectrum under <output_dir>/<sweep folder>/, like TRR's per-set .nc.
         nc_path = self.output_dir / experiment / f"{filepath.stem}.nc"
-        _save_processed_spectrum(nc_path, self.data, self.fit_result,
-                                 self.fit_result['lineshape'], experiment, fit_number)
+        _save_processed_spectrum(nc_path, self.data, result,
+                                 result['lineshape'], experiment, fit_number)
         print(f"Spectrum → {nc_path}")
 
         self._saved = True
