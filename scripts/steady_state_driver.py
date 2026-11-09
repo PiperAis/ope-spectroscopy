@@ -44,6 +44,18 @@ CONTOUR PLOT — PL intensity vs. energy and B-field (or temperature):
     raw. Save writes <processed_pl_dir>/<sample>_<tag>_contour[_subtracted].png
     (<tag> = bfield or temperature).
 
+COMPARE — tracked peak energies vs B-field from fit_results.csv:
+    python scripts/steady_state_driver.py --project MyExperiment --mode compare
+
+    Every peak of each sweep's B ≈ 0 fit starts a branch, followed field to
+    field by nearest energy; one colour per experiment (sweep folder).
+    Hollow markers: shared by two branches (merged peaks; left out of the
+    trend fit unless "Include shared" is ticked). Black ×: doubtful fit
+    (low R² or energy error large vs width). Dashed: quadratic trend
+    E0 + a·B + b·B², coefficients listed under the plot.
+    Controls: branch checkboxes, "Session" (latest or a fit_number), Save →
+    <processed_pl_dir>/branch_compare_<session>.png + branch_fits_<session>.csv.
+
 COMPARISON PLOTS — run the #%% cells below interactively in VS Code
     after fitting to build up fit_results.csv.
 """
@@ -53,6 +65,7 @@ COMPARISON PLOTS — run the #%% cells below interactively in VS Code
 
 from opespec.steady_state import PLFitter, load_fit_results, plot_peak_param, track_peak
 from opespec.pl_sweep import SweepContourBuilder, brightest_point
+from opespec.pl_fit_compare import FitCompareViewer, track_branches, fit_branch
 from opespec.utilities import load_config, select_files, select_directory
 
 ## Set project name here for interactive cell use:
@@ -73,6 +86,11 @@ from opespec.utilities import load_config, select_files, select_directory
 # Track the peak brightest at B = 0 through the field sweep (nearest energy, field to field):
 # plot_peak_param(track_peak(results), x_col='field', y_col='energy', group_by='sample',
 #                 title='Tracked peak energy vs field')
+
+# Every B = 0 peak as a branch, and a quadratic E(B) trend per branch (the --mode compare window, as tables):
+# branches = track_branches(results)
+# for (exp, br), rows in branches.groupby(['experiment', 'branch']):
+#     print(exp, br, fit_branch(rows))
 
 # Energy of the highest-intensity data point (no fit) vs field, one sweep folder per sample:
 # sweeps = [Path(cfg['processed_pl_dir']) / d for d in ['2026-10-27', '2026-11-03']]
@@ -99,8 +117,8 @@ if __name__ == "__main__":
                         help="Explicit spectrum paths, or a single directory — skips the browser")
     parser.add_argument('--pick-files', action='store_true',
                         help="Fit mode: pick individual files instead of a whole folder")
-    parser.add_argument('--mode', choices=['fit', 'contour-plot'], default='fit',
-                        help='What type of processing to execute. Options: fit, contour-plot.')
+    parser.add_argument('--mode', choices=['fit', 'contour-plot', 'compare'], default='fit',
+                        help='What type of processing to execute. Options: fit, contour-plot, compare.')
     parser.add_argument('--sweep', choices=['field', 'temperature'], default='field',
                         help="Contour-plot mode: the variable stepped across the sweep folder.")
     args = parser.parse_args()
@@ -118,6 +136,13 @@ if __name__ == "__main__":
         builder = SweepContourBuilder(files, output_dir=Path(cfg['processed_pl_dir']),
                                       sweep=args.sweep)
         builder.run()
+
+    if args.mode == 'compare':
+        csv_path = Path(cfg['processed_pl_dir']) / 'fit_results.csv'
+        if not csv_path.exists():
+            raise SystemExit(f"No fit results yet: {csv_path}")
+        print("Opening fit comparison...")
+        FitCompareViewer(load_fit_results(csv_path), output_dir=Path(cfg['processed_pl_dir'])).run()
 
     if args.mode == 'fit':
         if args.files:

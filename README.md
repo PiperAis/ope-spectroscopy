@@ -191,6 +191,22 @@ An interactive matplotlib window opens with a heatmap of PL intensity vs. energy
 
 When every spectrum in the folder has been fitted, the plot opens on baseline-subtracted data over the shared fit window, and a **Data** button switches to raw. **Save** writes the current figure to `processed_pl_dir/<sample>_<tag>_contour[_subtracted][_sg<N>].png`, where `<tag>` is `bfield` or `temperature`.
 
+### PL fit comparison (tracked peaks vs. B-field)
+
+```bash
+python /path/to/scripts/steady_state_driver.py --project CrSBr-3 --mode compare
+```
+
+Reads `processed_pl_dir/fit_results.csv`. In each experiment (sweep folder), every peak of the B ≈ 0 fit starts a branch, which is followed field to field by nearest energy (`track_branches`). The window plots peak energy vs field: one colour per experiment, one marker per branch, `energy_err` error bars, and all fitted peaks in grey behind them for context.
+
+- Hollow markers are fitted peaks claimed by more than one branch (peaks merged at high field).
+- A black × flags a doubtful fit: R² below `R2_MIN`, or `energy_err`/`width` above `REL_ERR_MAX` (class constants on `FitCompareViewer`).
+- The dashed lines are a weighted quadratic E0 + a·B + b·B² per branch (`fit_branch`). Its coefficients ± errors are listed under the plot. Shared points are left out of this fit unless **Include shared points** is ticked.
+- Checkboxes show or hide each branch. **Session** cycles between each spectrum's latest fit and a specific `fit_number`.
+- **Save** writes `processed_pl_dir/branch_compare_<session>.png` and `branch_fits_<session>.csv` (coefficients of the visible branches, in eV, eV/T and eV/T²).
+
+Run it as a plain script, like the fitter.
+
 After fitting, open `steady_state_driver.py` in VS Code (or your Python environment of choice) and run the `#%%` comparison-plot cells interactively to plot fit parameters across datasets (e.g. peak energy vs B-field, width vs temperature).
 
 ---
@@ -203,6 +219,7 @@ After fitting, open `steady_state_driver.py` in VS Code (or your Python environm
 | `processing_state` | `ProcessingState` — linear pipeline orchestrator for TRR (noise → normalize → subtract → FFT) |
 | `steady_state` | `load_pl_data`; `PLFitter` interactive fitter; `load_fit_results` / `plot_peak_param` / `track_peak` for cross-dataset comparison |
 | `pl_sweep` | Spectra vs. a sweep variable (`SWEEPS`: field or temperature): `SweepContourBuilder` interactive contour-plot builder; `brightest_point` |
+| `pl_fit_compare` | Cross-dataset comparison of saved fits: `track_branches` (all B = 0 peaks through a field sweep), `fit_branch` (quadratic E(B) trend), `FitCompareViewer` interactive window |
 | `fitting_functions` | Shared fitting primitives (exponential decay, Lorentzian, Gaussian, peak finding) |
 | `fft_functions` | FFT-based noise analysis utilities |
 | `noise_remover` | Noise removal step used in the TRR pipeline |
