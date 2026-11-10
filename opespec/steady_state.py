@@ -5,7 +5,8 @@ Key components:
 - load_pl_data: load a single PL CSV into an xr.DataArray (energy coords)
 - PLFitter: interactive matplotlib fitter — click to place peaks, choose
   Gaussian or Lorentzian lineshape, optionally share (or lock) one width
-  across chosen peaks, save results to CSV + PNG
+  across chosen peaks and/or fit chosen peaks as an evenly spaced ladder,
+  save results to CSV + PNG
 - load_fit_results / plot_peak_param: load fit_results.csv and plot any
   parameter pair across datasets (energy vs field, width vs temperature, etc.)
 - track_peak: follow one fitted peak through a field sweep
@@ -305,43 +306,67 @@ def _peak_results(fit: np.ndarray, err: np.ndarray, cov: np.ndarray,
     return peaks
 
 
-def _width_map(p0: list, bounds: list, shared: list[bool], shared_width: float | None):
+def _constraint_map(p0: list, bounds: list, shared: list[bool], shared_width: float | None,
+                    spaced: list[bool], center_bound: float = 0.008):
     """
     Map between the full peak-parameter vector p = [amp, center, width] × N
-    and the solver's free vector q, for the shared-width constraint.
+    (peaks in increasing energy) and the solver's free vector q, for the
+    shared-width and equal-spacing constraints.
 
-    Free peaks keep their own width; peaks with shared[j] use one common width,
-    which is a free parameter (appended after the peaks) or, if shared_width is
-    given, a constant. The map is linear, p = M·q + c, so covariances map as
-    M·cov_q·Mᵀ. With no shared peaks, q is p and M is the identity.
+    Shared width: peaks with shared[j] use one common width — a free
+    parameter, or the constant shared_width if given.
+    Equal spacing: the r-th peak (in energy order) with spaced[j] has
+    center E0 + r·Δ; E0 and Δ are free parameters. Needs ≥ 2 spaced peaks.
+    E0 is bounded to ±center_bound around its initial value (the lowest
+    spaced click), Δ to ±center_bound around the mean clicked spacing (and > 0).
 
-    Returns (q0, q_bounds, M, c).
+    q = [per-peak free params in p order] + [shared width] + [E0, Δ]; the map
+    is linear, p = M·q + c, so covariances map as M·cov_q·Mᵀ. With no
+    constraints, q is p and M is the identity.
+
+    Returns (q0, q_bounds, M, c, idx) with idx['spacing'] = position of Δ in q
+    (None without a spacing group).
     """
     n = len(p0) // 3
-    cols, q0, qb = [], [], []           # cols[i]: index into p of free param i (or None = shared width)
+    if sum(spaced) == 1:
+        spaced = [False] * n      # a ladder needs two rungs
+    cols, q0, qb = [], [], []     # cols[i]: {index into p: coefficient} for free param i
     c = np.zeros(len(p0))
     for j in range(n):
-        for i in (3*j, 3*j + 1) + (() if shared[j] else (3*j + 2,)):
-            cols.append([i]); q0.append(p0[i]); qb.append(bounds[i])
+        own = [3*j] + ([] if spaced[j] else [3*j + 1]) + ([] if shared[j] else [3*j + 2])
+        for i in own:
+            cols.append({i: 1.0}); q0.append(p0[i]); qb.append(bounds[i])
     widths = [3*j + 2 for j in range(n) if shared[j]]
     if widths:
         if shared_width is None:
-            cols.append(widths)
+            cols.append({i: 1.0 for i in widths})
             q0.append(float(np.mean([p0[i] for i in widths])))
             qb.append(bounds[widths[0]])
         else:
             c[widths] = shared_width
+    idx = {'spacing': None}
+    centers = [3*j + 1 for j in range(n) if spaced[j]]
+    if centers:
+        e = [p0[i] for i in centers]
+        e0, delta = e[0], (e[-1] - e[0]) / (len(e) - 1)
+        cols.append({i: 1.0 for i in centers})
+        q0.append(e0); qb.append([e0 - center_bound, e0 + center_bound])
+        cols.append({i: float(r) for r, i in enumerate(centers)})
+        q0.append(delta); qb.append([max(delta - center_bound, 1e-4), delta + center_bound])
+        idx['spacing'] = len(cols) - 1
     M = np.zeros((len(p0), len(cols)))
-    for k, rows in enumerate(cols):
-        M[rows, k] = 1.0
-    return q0, qb, M, c
+    for k, col in enumerate(cols):
+        for i, coef in col.items():
+            M[i, k] = coef
+    return q0, qb, M, c, idx
 
 
 def _fit_spectrum(data: xr.DataArray, peak_positions: list,
                   lineshape: str, energy_range: tuple,
                   baseline: str = 'constant',
                   shared: list[bool] | None = None,
-                  shared_width: float | None = None) -> dict | None:
+                  shared_width: float | None = None,
+                  spaced: list[bool] | None = None) -> dict | None:
     """
     Fit N peaks to the spectrum within energy_range using clicked peak positions
     as initial guesses. Returns a result dict or None on failure.
@@ -354,10 +379,22 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
             the one shared width; default all False (every width free).
     shared_width: FWHM (eV) to lock the shared width at; None = fit it.
                   A locked width has zero fit uncertainty (width_err = 0).
+    spaced: per peak, True = in the equal-spacing group: those peaks (in energy
+            order) sit at E0, E0+Δ, E0+2Δ, … with E0 and Δ fitted. Needs ≥ 2
+            peaks (a single one is ignored). Result has 'spacing'/'spacing_err'
+            (eV; None without a group).
+    With a spacing group, peak_positions must be in increasing energy order.
     """
-    shared = list(shared) if shared is not None else [False] * len(peak_positions)
-    if len(shared) != len(peak_positions):
-        raise ValueError("shared must have one entry per peak position")
+    npk = len(peak_positions)
+    shared = list(shared) if shared is not None else [False] * npk
+    spaced = list(spaced) if spaced is not None else [False] * npk
+    if len(shared) != npk or len(spaced) != npk:
+        raise ValueError("shared/spaced must have one entry per peak position")
+    if any(spaced) and list(peak_positions) != sorted(peak_positions):
+        raise ValueError("with a spacing group, peak_positions must be in increasing energy order")
+    if sum(spaced) == 1:
+        print("Only one peak in the spacing group; fitting it without the spacing constraint.")
+        spaced = [False] * npk
     xmin, xmax = energy_range
     mask = (data.energy >= xmin) & (data.energy <= xmax)
     da = data.where(mask, drop=True)
@@ -382,15 +419,17 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
 
     inputwids = [0.01] * len(peak_positions)
     pk0, pk_bounds = ff.generateParams_fixed(peak_positions, inputamps, inputwids)
-    # Solver vector: free peak params (shared width once, or none if locked), then baseline.
-    q0, q_bounds, M, c = _width_map(list(pk0), list(pk_bounds), shared, shared_width)
+    # Solver vector: free peak params (shared width once, or none if locked;
+    # E0 and Δ for the spacing group), then baseline.
+    q0, q_bounds, M, c, idx = _constraint_map(list(pk0), list(pk_bounds), shared,
+                                              shared_width, spaced)
     p0 = q0 + bl0
     bounds = q_bounds + bl_bounds
 
     fn, _ = ff.LINESHAPES[lineshape]
 
     # least_squares takes (lo, hi) arrays and needs lo < hi, so fixed parameters
-    # can't be given equal bounds; a locked width is a constant in _width_map instead.
+    # can't be given equal bounds; a locked width is a constant in _constraint_map instead.
     lo = np.array([-np.inf if b[0] is None else b[0] for b in bounds], dtype=float)
     hi = np.array([np.inf if b[1] is None else b[1] for b in bounds], dtype=float)
     p0 = np.clip(np.asarray(p0, dtype=float), lo, hi)
@@ -415,12 +454,16 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
         err = np.sqrt(np.clip(np.diag(cov), 0, None))
 
         peaks = _peak_results(fit, err, cov, lineshape, x)
-        for peak, s in zip(peaks, shared):
+        for peak, s, sp in zip(peaks, shared, spaced):
             peak['shared'] = bool(s)
+            peak['spaced'] = bool(sp)
+        i_sp = idx['spacing']
         return {'peaks': peaks,
                 'x_fit': x, 'y_total': fn(fit, x),
                 'y_data': y_sub, 'baseline': bl,
                 'width_locked': shared_width is not None and any(shared),
+                'spacing': None if i_sp is None else float(result.x[i_sp]),
+                'spacing_err': None if i_sp is None else float(np.sqrt(max(cov_q[i_sp, i_sp], 0.0))),
                 **ff.fit_quality(result.fun, y, len(p0))}
 
     except Exception as e:
@@ -501,6 +544,10 @@ def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, linesh
     # Shared-width constraint (netCDF has no bool attrs): 1 = in the shared group.
     attrs['peak_width_shared'] = np.array([int(p['shared']) for p in result['peaks']], dtype=np.int8)
     attrs['shared_width_locked'] = int(result['width_locked'])
+    attrs['peak_energy_spaced'] = np.array([int(p['spaced']) for p in result['peaks']], dtype=np.int8)
+    if result['spacing'] is not None:
+        attrs['spacing'] = float(result['spacing'])
+        attrs['spacing_err'] = float(result['spacing_err'])
     ds.attrs = attrs   # netCDF can't store None attrs; those were dropped above
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -529,6 +576,9 @@ def _fit_rows(filename: str, data: xr.DataArray, result: dict,
             'width_err':     peak['width_err'],
             'width_shared':  peak['shared'],
             'width_locked':  peak['shared'] and result['width_locked'],
+            'energy_spaced': peak['spaced'],
+            'spacing':       result['spacing'] if peak['spaced'] else None,
+            'spacing_err':   result['spacing_err'] if peak['spaced'] else None,
             'amplitude':     peak['amplitude'],
             'amplitude_err': peak['amplitude_err'],
             'area':          peak['area'],
@@ -581,6 +631,10 @@ class PLFitter:
     "Lock shared width" ticked, fits use the box value instead of fitting it
     (e.g. fit B = 0 unlocked, then lock for the rest of the sweep). The lock
     and value persist across files; Carry also carries each peak's group.
+    Ctrl+left-click a marker to put it in or take it out of the equal-spacing
+    group (thick dash-dot): those peaks, in energy order, are fitted as an even
+    ladder E0, E0+Δ, E0+2Δ, … with E0 and Δ fitted (Δ ± error printed and
+    saved). A peak can be in both groups; Carry carries this group too.
     Set the fit window with the E min / E max boxes (persists across files;
     toolbar zoom is view-only and does not affect the fit).
     Use the buttons to fit, save, and move through files. "← Back" (and Next
@@ -695,11 +749,11 @@ class PLFitter:
     # Internal: file loading
     # ------------------------------------------------------------------
 
-    def _load_current(self, seed_peaks: list[tuple[float, bool]] | None = None,
+    def _load_current(self, seed_peaks: list[tuple[float, bool, bool]] | None = None,
                       state: dict | None = None):
         """Load files[current_idx]. `state` (a snapshot from _stash_state) restores a
-        previously visited file; otherwise `seed_peaks` (carried (x, shared) peaks)
-        are placed."""
+        previously visited file; otherwise `seed_peaks` (carried (x, shared, spaced)
+        peaks) are placed."""
         self.peak_markers.clear()
         self.fit_lines.clear()
         self.fit_result = None
@@ -725,8 +779,8 @@ class PLFitter:
         self.ax.set_ylabel('Intensity (arb. units)')
 
         markers = state['markers'] if state is not None else (seed_peaks or [])
-        for x, shared in markers:
-            self._add_peak(x, shared)
+        for x, shared, spaced in markers:
+            self._add_peak(x, shared, spaced)
         if state is not None and state['fit_result'] is not None:
             self.fit_result = state['fit_result']
             self._saved = state['saved']
@@ -746,14 +800,15 @@ class PLFitter:
         self.ax.set_title(
             f'[{n}/{total}]  {filepath.name}{status}\n'
             f'{sample}  {spot}  —  '
-            'left-click: place peak  |  right-click: remove  |  shift-click: shared width',
+            'left-click: place  |  right-click: remove  |  shift-click: shared width  |  '
+            'ctrl-click: equal spacing',
             fontsize=9
         )
 
     def _stash_state(self):
         """Snapshot the current file so Back / revisiting restores it."""
         self._states[self.current_idx] = {
-            'markers':    [(m['x'], m['shared']) for m in self.peak_markers],
+            'markers':    [(m['x'], m['shared'], m['spaced']) for m in self.peak_markers],
             'fit_result': self.fit_result,
             'saved':      self._saved,
             'range':      (self.erange.emin, self.erange.emax),
@@ -825,6 +880,8 @@ class PLFitter:
             return
         if event.button == 1 and event.key == 'shift':
             self._toggle_shared(event.xdata)
+        elif event.button == 1 and event.key == 'control':
+            self._toggle_spaced(event.xdata)
         elif event.button == 1:
             self._add_peak(event.xdata)
         elif event.button == 3:
@@ -832,16 +889,20 @@ class PLFitter:
 
     _MARKER_COLORS = {False: 'steelblue', True: 'magenta'}   # shared width; not a tab10 fit colour
 
-    def _add_peak(self, x, shared: bool = False):
+    _MARKER_STYLES = {False: '--', True: '-.'}   # equal-spacing group → dash-dot
+
+    def _add_peak(self, x, shared: bool = False, spaced: bool = False):
         color = self._MARKER_COLORS[shared]
-        line = self.ax.axvline(x, color=color, linestyle='--', alpha=0.8, lw=1.2)
+        line = self.ax.axvline(x, color=color, linestyle=self._MARKER_STYLES[spaced],
+                               alpha=0.8, lw=1.8 if spaced else 1.2)
         # Blended transform: data x, axes-fraction y — stays at top regardless of zoom.
         text = self.ax.text(
             x, 0.96, f'{x:.4f}',
             transform=self.ax.get_xaxis_transform(),
             ha='center', va='top', fontsize=8, color=color, rotation=90,
         )
-        self.peak_markers.append({'x': x, 'line': line, 'text': text, 'shared': shared})
+        self.peak_markers.append({'x': x, 'line': line, 'text': text,
+                                  'shared': shared, 'spaced': spaced})
         self.fig.canvas.draw_idle()
 
     def _toggle_shared(self, x):
@@ -852,6 +913,16 @@ class PLFitter:
         m['shared'] = not m['shared']
         m['line'].set_color(self._MARKER_COLORS[m['shared']])
         m['text'].set_color(self._MARKER_COLORS[m['shared']])
+        self.fig.canvas.draw_idle()
+
+    def _toggle_spaced(self, x):
+        """Move the marker nearest x into / out of the equal-spacing group."""
+        if not self.peak_markers:
+            return
+        m = min(self.peak_markers, key=lambda m: abs(m['x'] - x))
+        m['spaced'] = not m['spaced']
+        m['line'].set_linestyle(self._MARKER_STYLES[m['spaced']])
+        m['line'].set_linewidth(1.8 if m['spaced'] else 1.2)
         self.fig.canvas.draw_idle()
 
     def _remove_nearest_peak(self, x):
@@ -888,6 +959,7 @@ class PLFitter:
         markers = sorted(self.peak_markers, key=lambda m: m['x'])
         peak_positions = [m['x'] for m in markers]
         shared = [m['shared'] for m in markers]
+        spaced = [m['spaced'] for m in markers]
         shared_width = None
         if self.lock_width and any(shared):
             if self.shared_width_mev is None:
@@ -896,7 +968,8 @@ class PLFitter:
                 return
             shared_width = self.shared_width_mev / 1e3
         result = _fit_spectrum(self.data, peak_positions, lineshape, self.erange.range,
-                               baseline=self.baseline, shared=shared, shared_width=shared_width)
+                               baseline=self.baseline, shared=shared, shared_width=shared_width,
+                               spaced=spaced)
         if result is None:
             print("Fit failed — try adjusting peak positions or the E min/E max range.")
             return
@@ -909,10 +982,15 @@ class PLFitter:
             self.tb_sw.set_val(f"{result['peaks'][shared.index(True)]['width'] * 1e3:.4g}")
 
         print(f"\nFit ({lineshape}): RMSE={result['rmse']:.3g}, R²={result['r_squared']:.4f}")
+        if result['spacing'] is not None:
+            print(f"  Spacing Δ = {result['spacing'] * 1e3:.3f} ± {result['spacing_err'] * 1e3:.2g} meV")
         for j, peak in enumerate(result['peaks']):
-            tag = ''
+            tags = []
             if peak['shared']:
-                tag = '  [shared width, locked]' if result['width_locked'] else '  [shared width]'
+                tags.append('shared width, locked' if result['width_locked'] else 'shared width')
+            if peak['spaced']:
+                tags.append('equal spacing')
+            tag = f"  [{'; '.join(tags)}]" if tags else ''
             print(f"  Peak {j+1}: E={peak['energy']:.4f} ± {peak['energy_err']:.2g} eV | "
                   f"FWHM={peak['width']:.4f} ± {peak['width_err']:.2g} eV | "
                   f"amp={peak['amplitude']:.1f} ± {peak['amplitude_err']:.2g} | "
@@ -1003,9 +1081,9 @@ class PLFitter:
         seeds = None
         if self.carry_peaks:
             if self.fit_result is not None:
-                seeds = [(p['energy'], p['shared']) for p in self.fit_result['peaks']]
+                seeds = [(p['energy'], p['shared'], p['spaced']) for p in self.fit_result['peaks']]
             else:
-                seeds = [(m['x'], m['shared']) for m in self.peak_markers]
+                seeds = [(m['x'], m['shared'], m['spaced']) for m in self.peak_markers]
 
         self.current_idx += 1
         self._clear_fit()

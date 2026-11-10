@@ -14,6 +14,9 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
     those peaks share one fitted FWHM, shown in the "Shared FWHM (meV)" box.
     "Lock shared width" fits with the box value instead (typed, or the last
     fit's) — e.g. fit B = 0 unlocked, then lock for the rest of the sweep.
+    Ctrl+left-click a marker to toggle it into the equal-spacing group (thick
+    dash-dot): those peaks are fitted as an even ladder E0, E0+Δ, E0+2Δ, …
+    with one fitted spacing Δ. A peak can be in both groups.
     E min / E max boxes set the fit window (persists across files; the
     toolbar zoom is view-only). "Baseline" button: constant or linear.
     "Carry peaks to next file" seeds the next spectrum's markers.

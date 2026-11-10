@@ -160,13 +160,14 @@ An interactive matplotlib window opens:
 - **Shift+left-click** a marker to put it in or take it out of the shared-width group (magenta markers). Peaks in the group are fitted with one common FWHM, which stops overlapping peaks trading width and keeps line shapes consistent across a sweep. After a fit, the **Shared FWHM (meV)** box shows the fitted width, or you can type a value. With **Lock shared width** ticked, fits use the box value instead of fitting it, and a locked width is reported with `width_err` = 0. The lock and the value carry over to the next file. A typical sweep: fit B = 0 with the width unlocked, tick Lock, then carry the peaks through the rest of the sweep.
 - **E min / E max** boxes set the fit window. It carries over to the next file. Toolbar zoom only changes the view, not the fit.
 - **Baseline** cycles constant ↔ linear. The baseline is fit together with the peaks, and the view shows the baseline-subtracted data.
-- **Carry peaks to next file** seeds the next spectrum's markers from this one's fitted peaks, including which peaks share the width.
+- **Ctrl+left-click** a marker to put it in or take it out of the equal-spacing group (thick dash-dot markers). Peaks in this group, sorted by energy, are fitted as an evenly spaced ladder E₀, E₀+Δ, E₀+2Δ, …, so only E₀ and one spacing Δ are fitted for their centres. Δ ± error prints with the fit and is saved. The group needs at least two peaks. E₀ is held within ±8 meV of the lowest clicked marker, and Δ within ±8 meV of the average clicked spacing. A peak can be in both groups.
+- **Carry peaks to next file** seeds the next spectrum's markers from this one's fitted peaks, including their width and spacing groups.
 - **Fit Gaussian** / **Fit Lorentzian** run the fit. Results with 1σ errors, RMSE and R² print to the console.
 - The title shows whether the current fit has been saved.
 
 **Save** writes:
 
-- a row per peak to `processed_pl_dir/fit_results.csv`. Each row has 1σ errors, `width_shared` / `width_locked` flags, the fit window (`fit_emin`/`fit_emax`) and fit quality (`rmse`, `r_squared`), and is tagged with `experiment` (the sweep folder) and `fit_number`.
+- a row per peak to `processed_pl_dir/fit_results.csv`. Each row has 1σ errors, `width_shared` / `width_locked` / `energy_spaced` flags (plus `spacing` / `spacing_err` on spaced peaks), the fit window (`fit_emin`/`fit_emax`) and fit quality (`rmse`, `r_squared`), and is tagged with `experiment` (the sweep folder) and `fit_number`.
 - a clean fit-overlay PNG to `processed_pl_dir/<experiment>/plots/fits_<n>/<stem>_fit.png`.
 - the processed spectrum to `processed_pl_dir/<experiment>/<stem>.nc`, which is overwritten by the latest save and records its `fit_number`.
 
