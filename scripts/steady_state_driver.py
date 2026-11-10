@@ -33,6 +33,20 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
       <processed_pl_dir>/<sweep>/<stem>.nc        raw / baseline / subtracted data
                                                   (+ fit settings and results in attrs)
 
+    --sync-obsidian: when the fitter window closes, every fitted spectrum in the
+    sweep folder(s) gets a note <vault_dir>/<Project>/<sweep> PL/Dataset <N>.md
+    (project dashes → spaces, e.g. HS-2 → HS 2). Properties: sample/spot/field/
+    temperature plus any other metadata.txt keys (filename wins, as at load), and
+    its latest fit plot copied to plots/ and embedded. Re-syncing rewrites only
+    those generated properties; your Notes and body are kept.
+
+SYNC ONLY — Obsidian notes from fits already saved (e.g. forgot --sync-obsidian):
+    python scripts/steady_state_driver.py --project MyExperiment --mode sync
+    python scripts/steady_state_driver.py --project MyExperiment --mode sync --files PL/processed/2026-11-03
+
+    Pick a processed sweep folder (or pass it with --files); no window opens.
+    Each spectrum's note uses its most recent saved fit.
+
 CONTOUR PLOT — PL intensity vs. energy and B-field (or temperature):
     python scripts/steady_state_driver.py --project MyExperiment --mode contour-plot
     python scripts/steady_state_driver.py --project MyExperiment --mode contour-plot --sweep temperature
@@ -74,6 +88,7 @@ from opespec.steady_state import PLFitter, load_fit_results, plot_peak_param, tr
 from opespec.pl_sweep import SweepContourBuilder, brightest_point
 from opespec.pl_fit_compare import FitCompareViewer, track_branches, fit_branch
 from opespec.utilities import load_config, select_files, select_directory
+from opespec.obsidian_integration import sync_pl_sweep
 
 ## Set project name here for interactive cell use:
 # project_name = 'CrSBr-4'
@@ -113,6 +128,22 @@ from opespec.utilities import load_config, select_files, select_directory
 
 #%%
 # ---------------------------------------------------------------------------
+def sync_obsidian(cfg: dict, project: str, sweeps) -> None:
+    """Write/update vault dataset notes for each named sweep folder."""
+    from pathlib import Path
+    if 'vault_root' not in cfg:
+        raise SystemExit("Obsidian sync needs vault_dir in machine_settings.yaml.")
+    # Vault project folders use spaces where project folders use dashes (HS-2 → HS 2).
+    vault_project = cfg['vault_root'] / project.replace('-', ' ')
+    for sweep in sorted(sweeps):
+        sweep_dir = Path(cfg['processed_pl_dir']) / sweep
+        if not sweep_dir.is_dir():
+            print(f"Nothing saved for {sweep}; skipping Obsidian sync.")
+            continue
+        expt_dir = sync_pl_sweep(sweep_dir, Path(cfg['pl_dir']) / sweep, vault_project)
+        print(f"Obsidian notes → {expt_dir}")
+
+
 if __name__ == "__main__":
     import argparse
     from pathlib import Path
@@ -124,10 +155,14 @@ if __name__ == "__main__":
                         help="Explicit spectrum paths, or a single directory — skips the browser")
     parser.add_argument('--pick-files', action='store_true',
                         help="Fit mode: pick individual files instead of a whole folder")
-    parser.add_argument('--mode', choices=['fit', 'contour-plot', 'compare'], default='fit',
-                        help='What type of processing to execute. Options: fit, contour-plot, compare.')
+    parser.add_argument('--mode', choices=['fit', 'contour-plot', 'compare', 'sync'], default='fit',
+                        help='What type of processing to execute. Options: fit, contour-plot, '
+                             'compare, sync (Obsidian notes only, from saved fits).')
     parser.add_argument('--sweep', choices=['field', 'temperature'], default='field',
                         help="Contour-plot mode: the variable stepped across the sweep folder.")
+    parser.add_argument('--sync-obsidian', action='store_true',
+                        help="Fit mode: after the window closes, write/update Obsidian dataset "
+                             "notes for the fitted sweep folder(s).")
     args = parser.parse_args()
 
     cfg = load_config(args.project)
@@ -165,5 +200,18 @@ if __name__ == "__main__":
         fitter = PLFitter(files, output_dir=Path(cfg['processed_pl_dir']))
         print(f"Opening fitter for {len(fitter.files)} file(s)...")
         fitter.run()
-    
+
+        if args.sync_obsidian:
+            sync_obsidian(cfg, args.project, {f.parent.name for f in fitter.files})
+
+    if args.mode == 'sync':
+        if args.files:
+            sweeps = {Path(f).name for f in args.files}
+        else:
+            chosen = select_directory(Path(cfg['processed_pl_dir']))
+            if not chosen:
+                raise SystemExit("No directory selected.")
+            sweeps = {chosen.name}
+        sync_obsidian(cfg, args.project, sweeps)
+
 

@@ -66,6 +66,7 @@ def load_config(project_name: str, settings_path: Path = _ROOT_DIR/'machine_sett
             if not cfg[key].exists():
                 warnings.warn(f"Config path does not exist — {key}: {cfg[key]}")
     if vault_dir:
+        cfg['vault_root'] = Path(vault_dir)
         cfg['project_vault'] = Path(vault_dir) / f'[{project_name}]'
 
     return cfg

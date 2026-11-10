@@ -173,6 +173,8 @@ An interactive matplotlib window opens:
 
 Each fitter run is a new fit session, and `n` (= `fit_number`) counts up from the highest existing `fits_<n>` folder for that experiment. Re-saving a spectrum in the same session replaces its CSV rows and plot. Earlier sessions are kept, so iterations can be compared. `track_peak` uses each spectrum's latest fit by default; pass `fit_number=` to use a specific session.
 
+**Obsidian sync:** add `--sync-obsidian` to fit mode. When the window closes, every fitted spectrum in the sweep folder gets a note `<vault_dir>/<Project>/<sweep> PL/Dataset <N>.md`. The project name has its dashes replaced by spaces (`HS-2` → `HS 2`), and that folder must already exist. Metadata is resolved as at load time: the filename, then the raw folder's `metadata.txt`. Each note gets Sample / Spot / Bfield / Temperature plus any extra `metadata.txt` keys, and the spectrum's latest fit plot, which is copied to `plots/` and embedded. If you fitted without the flag, `--mode sync` (with a folder browser, or `--files <processed sweep folder>`) syncs from the saved fits without opening the fitter. Re-syncing rewrites only those generated properties and keeps your Notes, other properties and the note body. Spectra whose files share a `##` prefix are named by the full stem instead.
+
 **Next →** advances to the next file and closes the window after the last one. **← Back** (or Next onto a file you've already visited) restores that file's markers, fit, E range and baseline, so you can save a forgotten fit or adjust and refit it. Run the fitter as a plain script, not in a `#%%` cell; the Jupyter kernel intercepts matplotlib clicks.
 
 ### PL contour plot (vs. B-field or temperature)
