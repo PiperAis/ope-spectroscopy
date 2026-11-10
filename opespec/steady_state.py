@@ -4,7 +4,8 @@ Steady-state PL processing: loading, interactive fitting, and comparison.
 Key components:
 - load_pl_data: load a single PL CSV into an xr.DataArray (energy coords)
 - PLFitter: interactive matplotlib fitter — click to place peaks, choose
-  Gaussian or Lorentzian lineshape, save results to CSV + PNG
+  Gaussian or Lorentzian lineshape, optionally share (or lock) one width
+  across chosen peaks, save results to CSV + PNG
 - load_fit_results / plot_peak_param: load fit_results.csv and plot any
   parameter pair across datasets (energy vs field, width vs temperature, etc.)
 - track_peak: follow one fitted peak through a field sweep
@@ -304,9 +305,43 @@ def _peak_results(fit: np.ndarray, err: np.ndarray, cov: np.ndarray,
     return peaks
 
 
+def _width_map(p0: list, bounds: list, shared: list[bool], shared_width: float | None):
+    """
+    Map between the full peak-parameter vector p = [amp, center, width] × N
+    and the solver's free vector q, for the shared-width constraint.
+
+    Free peaks keep their own width; peaks with shared[j] use one common width,
+    which is a free parameter (appended after the peaks) or, if shared_width is
+    given, a constant. The map is linear, p = M·q + c, so covariances map as
+    M·cov_q·Mᵀ. With no shared peaks, q is p and M is the identity.
+
+    Returns (q0, q_bounds, M, c).
+    """
+    n = len(p0) // 3
+    cols, q0, qb = [], [], []           # cols[i]: index into p of free param i (or None = shared width)
+    c = np.zeros(len(p0))
+    for j in range(n):
+        for i in (3*j, 3*j + 1) + (() if shared[j] else (3*j + 2,)):
+            cols.append([i]); q0.append(p0[i]); qb.append(bounds[i])
+    widths = [3*j + 2 for j in range(n) if shared[j]]
+    if widths:
+        if shared_width is None:
+            cols.append(widths)
+            q0.append(float(np.mean([p0[i] for i in widths])))
+            qb.append(bounds[widths[0]])
+        else:
+            c[widths] = shared_width
+    M = np.zeros((len(p0), len(cols)))
+    for k, rows in enumerate(cols):
+        M[rows, k] = 1.0
+    return q0, qb, M, c
+
+
 def _fit_spectrum(data: xr.DataArray, peak_positions: list,
                   lineshape: str, energy_range: tuple,
-                  baseline: str = 'constant') -> dict | None:
+                  baseline: str = 'constant',
+                  shared: list[bool] | None = None,
+                  shared_width: float | None = None) -> dict | None:
     """
     Fit N peaks to the spectrum within energy_range using clicked peak positions
     as initial guesses. Returns a result dict or None on failure.
@@ -315,7 +350,14 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
     energy_range: (xmin, xmax) in eV — the E min/E max range set in the GUI.
     baseline: 'constant' or 'linear' — fit jointly with the peaks as
               b(x) = c0 [+ c1·(x − xc)], xc = window center.
+    shared: per peak (aligned with peak_positions), True = this peak's FWHM is
+            the one shared width; default all False (every width free).
+    shared_width: FWHM (eV) to lock the shared width at; None = fit it.
+                  A locked width has zero fit uncertainty (width_err = 0).
     """
+    shared = list(shared) if shared is not None else [False] * len(peak_positions)
+    if len(shared) != len(peak_positions):
+        raise ValueError("shared must have one entry per peak position")
     xmin, xmax = energy_range
     mask = (data.energy >= xmin) & (data.energy <= xmax)
     da = data.where(mask, drop=True)
@@ -339,20 +381,23 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
         inputamps.append(max(float(y[idx] - _eval_baseline(bl_guess, x[idx])), 1.0))
 
     inputwids = [0.01] * len(peak_positions)
-    p0, bounds = ff.generateParams_fixed(peak_positions, inputamps, inputwids)
-    p0 = list(p0) + bl0
-    bounds = list(bounds) + bl_bounds
+    pk0, pk_bounds = ff.generateParams_fixed(peak_positions, inputamps, inputwids)
+    # Solver vector: free peak params (shared width once, or none if locked), then baseline.
+    q0, q_bounds, M, c = _width_map(list(pk0), list(pk_bounds), shared, shared_width)
+    p0 = q0 + bl0
+    bounds = q_bounds + bl_bounds
 
     fn, _ = ff.LINESHAPES[lineshape]
 
     # least_squares takes (lo, hi) arrays and needs lo < hi, so fixed parameters
-    # (equal bounds from generateParams_fixed) aren't supported here; PLFitter never fixes any.
+    # can't be given equal bounds; a locked width is a constant in _width_map instead.
     lo = np.array([-np.inf if b[0] is None else b[0] for b in bounds], dtype=float)
     hi = np.array([np.inf if b[1] is None else b[1] for b in bounds], dtype=float)
     p0 = np.clip(np.asarray(p0, dtype=float), lo, hi)
 
     def residuals(p):
-        return fn(p[:-k], x) + _eval_baseline(_baseline_from_params(baseline, p[-k:], xc), x) - y
+        return (fn(M @ p[:-k] + c, x)
+                + _eval_baseline(_baseline_from_params(baseline, p[-k:], xc), x) - y)
 
     try:
         # Residual-vector solver with Jacobian scaling: parameters span very different
@@ -360,16 +405,22 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
         # scalar L-BFGS-B fit stop well short of the minimum.
         result = least_squares(residuals, p0, bounds=(lo, hi), x_scale='jac')
         bl = _baseline_from_params(baseline, result.x[-k:], xc)
-        fit = result.x[:-k]
+        fit = M @ result.x[:-k] + c
         y_sub = y - _eval_baseline(bl, x)   # new name: `y` stays the raw data residuals() uses
 
-        # 1σ uncertainties from the Jacobian (residual variance estimated from the fit).
-        cov = ff.param_covariance(result.jac, result.fun)
+        # 1σ uncertainties from the Jacobian (residual variance estimated from the fit),
+        # mapped from the solver's free parameters back to every peak's (amp, center, width).
+        cov_q = ff.param_covariance(result.jac, result.fun)[:-k, :-k]
+        cov = M @ cov_q @ M.T
         err = np.sqrt(np.clip(np.diag(cov), 0, None))
 
-        return {'peaks': _peak_results(fit, err, cov, lineshape, x),
+        peaks = _peak_results(fit, err, cov, lineshape, x)
+        for peak, s in zip(peaks, shared):
+            peak['shared'] = bool(s)
+        return {'peaks': peaks,
                 'x_fit': x, 'y_total': fn(fit, x),
                 'y_data': y_sub, 'baseline': bl,
+                'width_locked': shared_width is not None and any(shared),
                 **ff.fit_quality(result.fun, y, len(p0))}
 
     except Exception as e:
@@ -447,6 +498,9 @@ def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, linesh
     })
     for key in _PEAK_KEYS:   # one entry per peak, in peak order
         attrs[f'peak_{key}'] = np.array([p[key] for p in result['peaks']], dtype=float)
+    # Shared-width constraint (netCDF has no bool attrs): 1 = in the shared group.
+    attrs['peak_width_shared'] = np.array([int(p['shared']) for p in result['peaks']], dtype=np.int8)
+    attrs['shared_width_locked'] = int(result['width_locked'])
     ds.attrs = attrs   # netCDF can't store None attrs; those were dropped above
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -473,6 +527,8 @@ def _fit_rows(filename: str, data: xr.DataArray, result: dict,
             'energy_err':    peak['energy_err'],
             'width':         peak['width'],
             'width_err':     peak['width_err'],
+            'width_shared':  peak['shared'],
+            'width_locked':  peak['shared'] and result['width_locked'],
             'amplitude':     peak['amplitude'],
             'amplitude_err': peak['amplitude_err'],
             'area':          peak['area'],
@@ -519,6 +575,12 @@ class PLFitter:
 
     Left-click on the spectrum to place a peak marker.
     Right-click on a marker to remove it.
+    Shift+left-click a marker to put it in or take it out of the
+    shared-width group (magenta): those peaks are fitted with one common FWHM. After a
+    fit the "Shared FWHM (meV)" box shows that width (or type one); with
+    "Lock shared width" ticked, fits use the box value instead of fitting it
+    (e.g. fit B = 0 unlocked, then lock for the rest of the sweep). The lock
+    and value persist across files; Carry also carries each peak's group.
     Set the fit window with the E min / E max boxes (persists across files;
     toolbar zoom is view-only and does not affect the fit).
     Use the buttons to fit, save, and move through files. "← Back" (and Next
@@ -558,6 +620,11 @@ class PLFitter:
         self._states: dict[int, dict] = {}  # per-file snapshot for Back / revisits
         self.carry_peaks = False  # seed next file's markers from this file's peaks
         self.baseline = 'constant'  # 'constant' or 'linear'; persists across files
+        # Shared-width constraint (persists across files): shift-click puts a marker
+        # in the group; the box shows the last fitted shared FWHM, or a typed one,
+        # and "Lock" fits with that value instead of fitting it.
+        self.lock_width = False
+        self.shared_width_mev: float | None = None
 
         self.fig: Figure  # created in run()
         self.ax: Axes
@@ -569,8 +636,8 @@ class PLFitter:
             print("No files to process.")
             return
 
-        self.fig = plt.figure(figsize=(10, 7))
-        self.ax  = self.fig.add_axes((0.10, 0.25, 0.87, 0.68))
+        self.fig = plt.figure(figsize=(10, 7.5))
+        self.ax  = self.fig.add_axes((0.10, 0.34, 0.87, 0.59))
 
         ax_emin = self.fig.add_axes((0.14, 0.135, 0.12, 0.05))
         ax_emax = self.fig.add_axes((0.40, 0.135, 0.12, 0.05))
@@ -607,9 +674,17 @@ class PLFitter:
         self.btn_base = _CycleButton(ax_base, 'Baseline', self._BASELINES, self.baseline,
                                      on_change=self._on_baseline)
 
+        # Shared-width row, above the E range row.
+        ax_sw = self.fig.add_axes((0.24, 0.205, 0.10, 0.05))
+        self.tb_sw = TextBox(ax_sw, 'Shared FWHM (meV) ', initial='')
+        self.tb_sw.on_submit(self._on_shared_width)
+        ax_lock = self.fig.add_axes((0.36, 0.195, 0.24, 0.07))
+        cb_lock = CheckButtons(ax_lock, ['Lock shared width'], [self.lock_width])
+        cb_lock.on_clicked(self._on_lock)
+
         # Keep references so widgets aren't garbage-collected.
         self._buttons = [btn_fitg, btn_fitl, btn_clear, btn_save, btn_back, btn_next, cb_carry,
-                         *self.erange.widgets, self.btn_base]
+                         *self.erange.widgets, self.btn_base, self.tb_sw, cb_lock]
 
         self.fig.canvas.mpl_connect('button_press_event', self._on_click)
 
@@ -620,10 +695,11 @@ class PLFitter:
     # Internal: file loading
     # ------------------------------------------------------------------
 
-    def _load_current(self, seed_peaks: list[float] | None = None,
+    def _load_current(self, seed_peaks: list[tuple[float, bool]] | None = None,
                       state: dict | None = None):
         """Load files[current_idx]. `state` (a snapshot from _stash_state) restores a
-        previously visited file; otherwise `seed_peaks` (carried peaks) are placed."""
+        previously visited file; otherwise `seed_peaks` (carried (x, shared) peaks)
+        are placed."""
         self.peak_markers.clear()
         self.fit_lines.clear()
         self.fit_result = None
@@ -649,8 +725,8 @@ class PLFitter:
         self.ax.set_ylabel('Intensity (arb. units)')
 
         markers = state['markers'] if state is not None else (seed_peaks or [])
-        for x in markers:
-            self._add_peak(x)
+        for x, shared in markers:
+            self._add_peak(x, shared)
         if state is not None and state['fit_result'] is not None:
             self.fit_result = state['fit_result']
             self._saved = state['saved']
@@ -670,14 +746,14 @@ class PLFitter:
         self.ax.set_title(
             f'[{n}/{total}]  {filepath.name}{status}\n'
             f'{sample}  {spot}  —  '
-            'left-click: place peak  |  right-click: remove peak',
+            'left-click: place peak  |  right-click: remove  |  shift-click: shared width',
             fontsize=9
         )
 
     def _stash_state(self):
         """Snapshot the current file so Back / revisiting restores it."""
         self._states[self.current_idx] = {
-            'markers':    [m['x'] for m in self.peak_markers],
+            'markers':    [(m['x'], m['shared']) for m in self.peak_markers],
             'fit_result': self.fit_result,
             'saved':      self._saved,
             'range':      (self.erange.emin, self.erange.emax),
@@ -689,6 +765,23 @@ class PLFitter:
 
     def _on_carry(self, _label):
         self.carry_peaks = not self.carry_peaks
+
+    def _on_lock(self, _label):
+        self.lock_width = not self.lock_width
+
+    def _on_shared_width(self, text: str):
+        if not text.strip():
+            self.shared_width_mev = None
+            return
+        try:
+            value = float(text)
+            if value <= 0:
+                raise ValueError
+        except ValueError:
+            print(f"Invalid shared FWHM: {text!r} (meV, > 0)")
+            self.tb_sw.set_val('' if self.shared_width_mev is None else f'{self.shared_width_mev:.4g}')
+            return
+        self.shared_width_mev = value
 
     _BASELINES = ('constant', 'linear')
 
@@ -730,20 +823,35 @@ class PLFitter:
     def _on_click(self, event):
         if event.inaxes is not self.ax:
             return
-        if event.button == 1:
+        if event.button == 1 and event.key == 'shift':
+            self._toggle_shared(event.xdata)
+        elif event.button == 1:
             self._add_peak(event.xdata)
         elif event.button == 3:
             self._remove_nearest_peak(event.xdata)
 
-    def _add_peak(self, x):
-        line = self.ax.axvline(x, color='steelblue', linestyle='--', alpha=0.8, lw=1.2)
+    _MARKER_COLORS = {False: 'steelblue', True: 'magenta'}   # shared width; not a tab10 fit colour
+
+    def _add_peak(self, x, shared: bool = False):
+        color = self._MARKER_COLORS[shared]
+        line = self.ax.axvline(x, color=color, linestyle='--', alpha=0.8, lw=1.2)
         # Blended transform: data x, axes-fraction y — stays at top regardless of zoom.
         text = self.ax.text(
             x, 0.96, f'{x:.4f}',
             transform=self.ax.get_xaxis_transform(),
-            ha='center', va='top', fontsize=8, color='steelblue', rotation=90,
+            ha='center', va='top', fontsize=8, color=color, rotation=90,
         )
-        self.peak_markers.append({'x': x, 'line': line, 'text': text})
+        self.peak_markers.append({'x': x, 'line': line, 'text': text, 'shared': shared})
+        self.fig.canvas.draw_idle()
+
+    def _toggle_shared(self, x):
+        """Move the marker nearest x into / out of the shared-width group."""
+        if not self.peak_markers:
+            return
+        m = min(self.peak_markers, key=lambda m: abs(m['x'] - x))
+        m['shared'] = not m['shared']
+        m['line'].set_color(self._MARKER_COLORS[m['shared']])
+        m['text'].set_color(self._MARKER_COLORS[m['shared']])
         self.fig.canvas.draw_idle()
 
     def _remove_nearest_peak(self, x):
@@ -777,9 +885,18 @@ class PLFitter:
             print("Place at least one peak marker before fitting.")
             return
 
-        peak_positions = sorted(m['x'] for m in self.peak_markers)
+        markers = sorted(self.peak_markers, key=lambda m: m['x'])
+        peak_positions = [m['x'] for m in markers]
+        shared = [m['shared'] for m in markers]
+        shared_width = None
+        if self.lock_width and any(shared):
+            if self.shared_width_mev is None:
+                print("Lock shared width is on, but no shared FWHM is set: fit once "
+                      "unlocked, or type a value (meV).")
+                return
+            shared_width = self.shared_width_mev / 1e3
         result = _fit_spectrum(self.data, peak_positions, lineshape, self.erange.range,
-                               baseline=self.baseline)
+                               baseline=self.baseline, shared=shared, shared_width=shared_width)
         if result is None:
             print("Fit failed — try adjusting peak positions or the E min/E max range.")
             return
@@ -787,13 +904,19 @@ class PLFitter:
         self.fit_result = {**result, 'lineshape': lineshape}
         self._saved = False
         self._show_fit()
+        if any(shared) and shared_width is None:
+            # Show the fitted shared width; with Lock, later fits (and files) reuse it.
+            self.tb_sw.set_val(f"{result['peaks'][shared.index(True)]['width'] * 1e3:.4g}")
 
         print(f"\nFit ({lineshape}): RMSE={result['rmse']:.3g}, R²={result['r_squared']:.4f}")
         for j, peak in enumerate(result['peaks']):
+            tag = ''
+            if peak['shared']:
+                tag = '  [shared width, locked]' if result['width_locked'] else '  [shared width]'
             print(f"  Peak {j+1}: E={peak['energy']:.4f} ± {peak['energy_err']:.2g} eV | "
                   f"FWHM={peak['width']:.4f} ± {peak['width_err']:.2g} eV | "
                   f"amp={peak['amplitude']:.1f} ± {peak['amplitude_err']:.2g} | "
-                  f"area={peak['area']:.4f} ± {peak['area_err']:.2g}")
+                  f"area={peak['area']:.4f} ± {peak['area_err']:.2g}{tag}")
 
     def _show_fit(self):
         """Draw self.fit_result: baseline-subtracted data plus the fit overlay."""
@@ -880,9 +1003,9 @@ class PLFitter:
         seeds = None
         if self.carry_peaks:
             if self.fit_result is not None:
-                seeds = [p['energy'] for p in self.fit_result['peaks']]
+                seeds = [(p['energy'], p['shared']) for p in self.fit_result['peaks']]
             else:
-                seeds = [m['x'] for m in self.peak_markers]
+                seeds = [(m['x'], m['shared']) for m in self.peak_markers]
 
         self.current_idx += 1
         self._clear_fit()
