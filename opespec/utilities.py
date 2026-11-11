@@ -141,10 +141,13 @@ def get_field(filename : str | Path) -> float | None:
     Gets magnetic field from data filename, returning it as a str or 
     None if not found. Assumes filename structure is (e.g.)
     ***-n2p6T-*** where n represents negative sign, p represents a
-    period, and the field is separated from other information by '-'
+    period, and the field is separated from other information by '-'.
+    Only a whole dash-delimited token counts: old underscore-format names
+    like '120K_-2T' ('-' as minus sign) don't match, so they give None
+    rather than a wrong-sign field.
     """
     # Search for the regex pattern denoting bfield
-    match = re.search(r'-n?\d+(p\d+)?T', str(filename))
+    match = re.search(r'(?<!_)-n?\d+(p\d+)?T(?=-|\.|$)', str(filename))
 
     # Convert filename formatting to float
     if match:
