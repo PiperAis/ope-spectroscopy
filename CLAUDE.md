@@ -58,6 +58,12 @@ Module-specific intent and rules live in each file's header docstring — read t
 - **Where captures go:** under the relevant area's Bugs and issues / Refinements / Revisit. Use Cleanup-later only for small issues that cut across areas, or for dead code.
 - **No changelog entries.** Don't add items like "docstring updated" or "bug fixed". The record of a finished task is its checked-off item.
 
+## Version control
+
+- **One short-lived branch per task,** cut from `main` (e.g. `fix/…`, `feat/…`, `docs/…`). Commit there. Don't merge: I review the diff (and the golden check, where relevant) and then ask you to merge. When I do, merge with `--ff-only` and delete the branch. Don't push unless asked.
+- **GitHub Issues are for bugs that may have affected results already produced** (e.g. a normalization using the wrong factor). The package has another occasional user, so these issues are the public record of which past analysis needs redoing. Label them `bug` + `affects-results`. Each one says what was wrong; which outputs, functions and date or commit range are affected; how to tell whether a given result is affected; and the fix. Draft the issue and confirm with me before creating it, since it's visible to others. Reference it from the fixing commit (`Fixes #N`).
+- All other bugs, to-dos and refinements stay in the plan file.
+
 ## Collaboration preferences
 
 - Concise responses. Think things through when it matters, but don't pad.
