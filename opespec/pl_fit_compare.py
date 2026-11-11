@@ -3,9 +3,9 @@ Cross-dataset comparison of saved PL fits (fit_results.csv from PLFitter):
 follow fitted peaks through a field sweep and fit their energy trend.
 
 Key components:
-- track_branches: follow every peak of the B ≈ 0 fit through each sweep
-  (experiment), nearest energy field to field; flags points shared by
-  more than one branch (peaks merged at high field)
+- track_branches: follow every peak of the seed fit (B = 0, or the lowest
+  temperature) through each sweep (experiment), nearest energy step to
+  step; flags points shared by more than one branch (merged peaks)
 - fit_branch: weighted polynomial E(B) = E0 + a·B (+ b·B²) for one branch
 - FitCompareViewer: interactive window — tracked branches (energy vs field)
   per experiment with error bars, shared/bad-fit flags and trend fits;
@@ -14,7 +14,8 @@ Key components:
   fit plot
 
 Rules: works only on the fit_results DataFrame (load_fit_results) — no
-refitting. A "series" is an experiment (sweep folder). Each spectrum's
+refitting. A "series" is an experiment (sweep folder). The sweep variable
+is passed explicitly (as in pl_sweep), never inferred. Each spectrum's
 latest fit session is used unless fit_number is given. No paths live here;
 callers pass output_dir (the processed_pl_dir PLFitter saved to).
 
@@ -31,44 +32,58 @@ from matplotlib.widgets import Button, CheckButtons
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from .steady_state import _latest_saves, _CycleButton
+from .pl_sweep import _check_sweep
 
 
-def track_branches(df: pd.DataFrame, fit_number: int | None = None) -> pd.DataFrame:
+def track_branches(df: pd.DataFrame, fit_number: int | None = None,
+                   sweep: str = 'field') -> pd.DataFrame:
     """
-    Follow every peak of the B ≈ 0 fit through each field sweep.
+    Follow every peak of the seed spectrum's fit through each sweep.
 
-    Per experiment, the seeds are all peaks of the spectrum at the field
-    closest to 0 (warns if that field isn't 0; if several spectra share it,
-    the first by filename seeds). Each seed is walked outward through the
-    fields in both directions, taking at each field the peak nearest in
-    energy to the one tracked at the previous field (as track_peak does for
-    the brightest peak only).
+    sweep : 'field' (default) or 'temperature', the column walked along.
+
+    Per experiment, the seeds are all peaks of one spectrum: the one at
+    B = 0 for a field sweep, or at the lowest temperature for a temperature
+    sweep. Warns if a field sweep has no B = 0 spectrum (seeds at the field
+    nearest 0 instead), or if more than one spectrum sits at the seed point
+    (the first by filename seeds; the others are matched to its peaks like
+    any other spectrum). Each seed is walked
+    outward through the sweep values (both directions for field), taking at
+    each step the peak nearest in energy to the one tracked at the previous
+    step (as track_peak does for the brightest peak only).
 
     Returns one row per (branch, spectrum) with added columns:
       branch     0, 1, ... in order of seed energy, per experiment
       branch_e0  the seed energy (eV)
       shared     True where this fitted peak is also on another branch
     """
+    units = _check_sweep(sweep)['units']
     data = _latest_saves(df, fit_number)
     tracked = []
-    for experiment, sweep in data.groupby('experiment', dropna=False):
-        sweep = sweep.dropna(subset=['field'])
-        if sweep.empty:
+    for experiment, points in data.groupby('experiment', dropna=False):
+        points = points.dropna(subset=[sweep])
+        if points.empty:
             continue
-        fields = np.sort(sweep['field'].unique())
-        f0 = fields[np.argmin(np.abs(fields))]
-        if f0 != 0:
-            warnings.warn(f"{experiment}: no B = 0 spectrum; seeding branches at {f0} T.")
-        at_f0 = sweep[sweep['field'] == f0]
-        seed_file = sorted(at_f0['filename'])[0]
-        seeds = np.sort(at_f0[at_f0['filename'] == seed_file]['energy'].to_numpy())
+        values = np.sort(points[sweep].unique())
+        if sweep == 'field':
+            f0 = values[np.argmin(np.abs(values))]
+            if f0 != 0:
+                warnings.warn(f"{experiment}: no B = 0 spectrum; seeding branches at {f0:g} T.")
+        else:
+            f0 = values[0]
+        at_f0 = points[points[sweep] == f0]
+        seed_files = sorted(at_f0['filename'].unique())
+        if len(seed_files) > 1:
+            warnings.warn(f"{experiment}: {len(seed_files)} spectra at the seed point "
+                          f"({f0:g} {units}): {', '.join(seed_files)}. Seeding from {seed_files[0]}.")
+        seeds = np.sort(at_f0[at_f0['filename'] == seed_files[0]]['energy'].to_numpy())
 
         for branch, e0 in enumerate(seeds):
-            for direction in (fields[fields > f0], fields[fields < f0][::-1], [f0]):
+            for direction in (values[values > f0], values[values < f0][::-1], [f0]):
                 ref = e0
                 for f in direction:
                     chosen = []
-                    for _, spectrum in sweep[sweep['field'] == f].groupby('filename'):
+                    for _, spectrum in points[points[sweep] == f].groupby('filename'):
                         row = spectrum.loc[(spectrum['energy'] - ref).abs().idxmin()].copy()
                         row['branch'] = branch
                         row['branch_e0'] = e0
@@ -82,7 +97,7 @@ def track_branches(df: pd.DataFrame, fit_number: int | None = None) -> pd.DataFr
     peak_id = ['experiment', 'filename', 'peak_index']
     n_branches = out.groupby(peak_id, dropna=False)['branch'].transform('nunique')
     out['shared'] = n_branches > 1
-    return out.sort_values(['experiment', 'branch', 'field']).reset_index(drop=True)
+    return out.sort_values(['experiment', 'branch', sweep]).reset_index(drop=True)
 
 
 def fit_branch(rows: pd.DataFrame, degree: int = 2,
