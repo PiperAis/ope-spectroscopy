@@ -1,0 +1,2 @@
+# Store text files with LF in the repo; checkouts use the platform default.
+* text=auto
