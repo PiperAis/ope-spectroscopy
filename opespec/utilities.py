@@ -227,6 +227,14 @@ def get_spot(filename: str, default='unknown spot') -> str:
         return 'Spot ' + spot_match.group(1)
     return default
 
+def _normalize_spot(value):
+    """A metadata.txt spot value in the filename form: 1, '1', 'spot1',
+    'Spot 1' → 'Spot 1'. None stays None."""
+    if value is None:
+        return None
+    label = re.sub(r'^spot\s*', '', str(value).strip(), flags=re.IGNORECASE)
+    return 'Spot ' + label
+
 def get_temperature(filename: str | Path) -> float | None:
     """
     Gets temperature in Kelvin from filename (e.g. '1p6K' → 1.6, '10K' → 10.0).
@@ -268,13 +276,16 @@ def get_metadata(filepath: str | Path, defaults: bool = True) -> dict:
     Merged metadata for a data file. Values parsed from the filename
     override those in metadata.txt in the file's folder (warning on
     conflict). Keys: sample, spot, field, temperature, scale_factor,
-    rzero, plus any extra keys from metadata.txt. A key found in neither
+    rzero, plus any extra keys from metadata.txt (a metadata.txt spot such
+    as `1` is put in the filename form 'Spot 1'). A key found in neither
     gets its default, or None if defaults=False (to tell "not found"
     apart from a default value).
     """
     filepath = Path(filepath)
     name = filepath.name
-    folder_metadata = _read_folder_metadata(filepath.parent.resolve())
+    folder_metadata = dict(_read_folder_metadata(filepath.parent.resolve()))
+    if 'spot' in folder_metadata:   # same form as get_spot gives ('Spot 1')
+        folder_metadata['spot'] = _normalize_spot(folder_metadata['spot'])
 
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
