@@ -9,8 +9,9 @@ Key components:
 - fit_branch: weighted polynomial E(B) = E0 + a·B (+ b·B²) for one branch
 - FitCompareViewer: interactive window — tracked branches (energy vs field)
   per experiment with error bars, shared/bad-fit flags and trend fits;
-  branch toggles, fit-session picker, save PNG + coefficient CSV;
-  click a point to view that spectrum's saved fit plot
+  branch toggles, fit-session picker, faded overlay of a second session,
+  save PNG + coefficient CSV; click a point to view that spectrum's saved
+  fit plot
 
 Rules: works only on the fit_results DataFrame (load_fit_results) — no
 refitting. A "series" is an experiment (sweep folder). Each spectrum's
@@ -135,15 +136,23 @@ class FitCompareViewer:
     - Dashed line: fit_branch trend (quadratic); coefficients listed below.
 
     Controls: one checkbox per (experiment, branch); "Session" cycles
-    latest → each fit_number; "Include shared points in trend fit"; Save.
+    latest → each fit_number; "Overlay" cycles none → latest → each
+    fit_number; "Include shared points in trend fit"; Save.
+    The overlay session is tracked and fitted on its own and drawn faded
+    (same colours and markers, its fit lines listed after the main ones as
+    "[overlay <session>]"). Branches are matched between sessions by
+    (experiment, branch index), so one checkbox toggles both; check the
+    E at B≈0 in the two coefficient lines to confirm they are the same peak.
     Clicking any point (branch or grey) shows that spectrum's saved fit plot,
     <output_dir>/<experiment>/plots/fits_<fit_number>/<stem>_fit.png, in a
     separate window that is reused by later clicks.
 
     Save writes <output_dir>/branch_compare_<session>.png and
     <output_dir>/branch_fits_<session>.csv (coefficients of the visible
-    branches; energies in eV, a in eV/T, b in eV/T²). Both are overwritten
-    by a later save of the same session.
+    branches; energies in eV, a in eV/T, b in eV/T²). With an overlay the
+    names end _<session>_vs_<overlay> and the CSV also holds the overlay's
+    rows (its 'session' column tells them apart). Files are overwritten by a
+    later save of the same session (and overlay).
 
     Must be run as a plain script (like PLFitter), not in a #%% cell.
 
@@ -155,6 +164,7 @@ class FitCompareViewer:
     R2_MIN = 0.95
     REL_ERR_MAX = 0.5   # energy_err / width: centre not resolved within the line
     DEGREE = 2
+    OVERLAY_ALPHA = 0.3
     _MARKERS = 'osD^v<>ph*'
 
     def __init__(self, df: pd.DataFrame, output_dir: Path):
@@ -163,6 +173,7 @@ class FitCompareViewer:
         sessions = sorted(int(n) for n in df['fit_number'].dropna().unique())
         self._sessions = ['latest'] + [str(n) for n in sessions]
         self.session = 'latest'
+        self.overlay = 'none'
         self.include_shared = False
         self.visible: dict[tuple, bool] = {}   # (experiment, branch) → shown; persists across sessions
         self.experiments = sorted(df['experiment'].dropna().astype(str).unique())
@@ -174,6 +185,8 @@ class FitCompareViewer:
         self.cb_branches: CheckButtons | None = None
         self.branches = pd.DataFrame()
         self.fits: dict[tuple, dict | None] = {}
+        self.ov_branches = pd.DataFrame()      # overlay session, same layout
+        self.ov_fits: dict[tuple, dict | None] = {}
         self._pick_rows: dict = {}             # plotted point artist → its rows, for click-to-open
         self._last_click = None                # one click can pick several overlapping artists
         self._preview: Figure | None = None
@@ -182,6 +195,10 @@ class FitCompareViewer:
     def fit_number(self) -> int | None:
         return None if self.session == 'latest' else int(self.session)
 
+    @property
+    def overlay_fit_number(self) -> int | None:
+        return None if self.overlay in ('latest', 'none') else int(self.overlay)
+
     def run(self):
         self.fig = plt.figure(figsize=(12, 8))
         self.ax = self.fig.add_axes((0.08, 0.42, 0.60, 0.53))
@@ -189,11 +206,14 @@ class FitCompareViewer:
         self.ax_text = self.fig.add_axes((0.02, 0.02, 0.96, 0.20))
         self.ax_text.axis('off')
 
-        ax_session = self.fig.add_axes((0.08, 0.25, 0.18, 0.05))
-        ax_shared = self.fig.add_axes((0.28, 0.24, 0.26, 0.07))
-        ax_save = self.fig.add_axes((0.56, 0.25, 0.12, 0.05))
+        ax_session = self.fig.add_axes((0.08, 0.25, 0.13, 0.05))
+        ax_overlay = self.fig.add_axes((0.22, 0.25, 0.13, 0.05))
+        ax_shared = self.fig.add_axes((0.36, 0.24, 0.21, 0.07))
+        ax_save = self.fig.add_axes((0.58, 0.25, 0.10, 0.05))
         self.btn_session = _CycleButton(ax_session, 'Session', self._sessions, self.session,
                                         on_change=self._on_session)
+        self.btn_overlay = _CycleButton(ax_overlay, 'Overlay', ['none', *self._sessions],
+                                        self.overlay, on_change=self._on_overlay)
         self.cb_shared = CheckButtons(ax_shared, ['Include shared points\nin trend fit'],
                                       [self.include_shared])
         self.cb_shared.on_clicked(self._on_shared)
@@ -209,31 +229,51 @@ class FitCompareViewer:
     # ------------------------------------------------------------------
 
     def _load_session(self):
-        """Re-track branches for the selected session and rebuild the toggles."""
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter('always')
-            self.branches = track_branches(self.df, self.fit_number)
-        for w in caught:
-            print(f"Warning: {w.message}")
+        """Re-track branches for the selected (and overlay) session and rebuild the toggles."""
+        self.branches = self._track(self.fit_number)
+        self.ov_branches = (pd.DataFrame() if self.overlay == 'none'
+                            else self._track(self.overlay_fit_number))
         self._fit_all()
         self._build_toggles()
         self._draw()
 
+    def _track(self, fit_number: int | None) -> pd.DataFrame:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            branches = track_branches(self.df, fit_number)
+        for w in caught:
+            print(f"Warning: {w.message}")
+        return branches
+
     def _fit_all(self):
-        self.fits = {}
-        for key, rows in self.branches.groupby(['experiment', 'branch']):
-            self.fits[key] = fit_branch(rows, self.DEGREE, self.include_shared)
+        self.fits = self._fit_branches(self.branches)
+        self.ov_fits = self._fit_branches(self.ov_branches)
+
+    def _fit_branches(self, branches: pd.DataFrame) -> dict[tuple, dict | None]:
+        if branches.empty:
+            return {}
+        return {key: fit_branch(rows, self.DEGREE, self.include_shared)
+                for key, rows in branches.groupby(['experiment', 'branch'])}
 
     def _keys(self) -> list[tuple]:
-        return list(self.fits)
+        """Toggle keys: the main session's branches, then any only in the overlay."""
+        return list(self.fits) + [k for k in self.ov_fits if k not in self.fits]
 
-    def _rows(self, key: tuple) -> pd.DataFrame:
+    def _rows(self, key: tuple, branches: pd.DataFrame | None = None) -> pd.DataFrame:
+        branches = self.branches if branches is None else branches
+        if branches.empty:
+            return branches
         exp, br = key
-        return self.branches[(self.branches['experiment'] == exp)
-                             & (self.branches['branch'] == br)].sort_values('field')
+        return branches[(branches['experiment'] == exp)
+                        & (branches['branch'] == br)].sort_values('field')
 
-    def _label(self, key: tuple) -> str:
-        return f"{key[0]} · {self._rows(key)['branch_e0'].iloc[0]:.4f} eV"
+    def _label(self, key: tuple, branches: pd.DataFrame | None = None) -> str:
+        """'<experiment> · <seed energy>'. With no branches given (a toggle), taken
+        from the main session if it has the key, else the overlay."""
+        rows = self._rows(key, branches)
+        if rows.empty and branches is None:
+            rows = self._rows(key, self.ov_branches)
+        return f"{key[0]} · {rows['branch_e0'].iloc[0]:.4f} eV"
 
     def _color(self, experiment) -> tuple:
         colors = plt.cm.tab10.colors  # pyright: ignore[reportAttributeAccessIssue]
@@ -274,34 +314,16 @@ class FitCompareViewer:
                           label='All fitted peaks', picker=5)
         self._pick_rows[artist] = context
 
-        lines = []
-        for key, fit in self.fits.items():
-            if not self.visible.get(key, True):
-                continue
-            rows = self._rows(key)
-            color = self._color(key[0])
-            marker = self._MARKERS[int(key[1]) % len(self._MARKERS)]
-            shared = rows['shared'].astype(bool)
-            ax.errorbar(rows['field'], rows['energy'], yerr=rows['energy_err'],
-                        color=color, lw=0.8, capsize=2, marker='none', zorder=2)
-            artist, = ax.plot(rows['field'][~shared], rows['energy'][~shared], marker,
-                              color=color, zorder=3, label=self._label(key), picker=5)
-            self._pick_rows[artist] = rows[~shared]
-            artist, = ax.plot(rows['field'][shared], rows['energy'][shared], marker,
-                              color=color, mfc='none', zorder=3, picker=5)
-            self._pick_rows[artist] = rows[shared]
-            bad = self._bad(rows)
-            ax.plot(rows['field'][bad], rows['energy'][bad], 'x', color='black', ms=9, zorder=4)
-
-            if fit is not None:
-                b = np.linspace(rows['field'].min(), rows['field'].max(), 200)
-                coeffs = [fit.get('b', 0.0), fit['a'], fit['E0']]
-                ax.plot(b, np.polyval(coeffs, b), '--', color=color, lw=1, zorder=2)
-            lines.append(self._fit_text(key, fit))
+        lines = self._draw_branches(self.branches, self.fits)
+        if self.overlay != 'none':
+            ax.plot([], [], 'o', color='0.4', alpha=self.OVERLAY_ALPHA,
+                    label=f"Overlay: session {self.overlay}")
+            lines += self._draw_branches(self.ov_branches, self.ov_fits, overlay=True)
 
         ax.set_xlabel('Magnetic Field (T)')
         ax.set_ylabel('Peak energy (eV)')
         ax.set_title(f"Tracked peaks — session: {self.session}"
+                     + ("" if self.overlay == 'none' else f", overlay: {self.overlay} (faded)")
                      + ("" if self.include_shared else " (shared points excluded from fits)"),
                      fontsize=10)
         ax.legend(fontsize=7, loc='best')
@@ -312,8 +334,46 @@ class FitCompareViewer:
                           family='monospace', fontsize=7.5, transform=self.ax_text.transAxes)
         self.fig.canvas.draw_idle()
 
-    def _fit_text(self, key: tuple, fit: dict | None) -> str:
-        label = self._label(key)
+    def _draw_branches(self, branches: pd.DataFrame, fits: dict,
+                       overlay: bool = False) -> list[str]:
+        """Draw one session's visible branches; return their coefficient lines.
+        The overlay is faded, drawn under the main session and kept out of the legend."""
+        ax = self.ax
+        alpha = self.OVERLAY_ALPHA if overlay else 1.0
+        z = -0.5 if overlay else 0
+        lines = []
+        for key, fit in fits.items():
+            if not self.visible.get(key, True):
+                continue
+            rows = self._rows(key, branches)
+            color = self._color(key[0])
+            marker = self._MARKERS[int(key[1]) % len(self._MARKERS)]
+            shared = rows['shared'].astype(bool)
+            ax.errorbar(rows['field'], rows['energy'], yerr=rows['energy_err'],
+                        color=color, lw=0.8, capsize=2, marker='none', alpha=alpha, zorder=2 + z)
+            artist, = ax.plot(rows['field'][~shared], rows['energy'][~shared], marker,
+                              color=color, alpha=alpha, zorder=3 + z, picker=5,
+                              label=None if overlay else self._label(key, branches))
+            self._pick_rows[artist] = rows[~shared]
+            artist, = ax.plot(rows['field'][shared], rows['energy'][shared], marker,
+                              color=color, mfc='none', alpha=alpha, zorder=3 + z, picker=5)
+            self._pick_rows[artist] = rows[shared]
+            bad = self._bad(rows)
+            ax.plot(rows['field'][bad], rows['energy'][bad], 'x', color='black', ms=9,
+                    alpha=alpha, zorder=4 + z)
+
+            if fit is not None:
+                b = np.linspace(rows['field'].min(), rows['field'].max(), 200)
+                coeffs = [fit.get('b', 0.0), fit['a'], fit['E0']]
+                ax.plot(b, np.polyval(coeffs, b), '--', color=color, lw=1, alpha=alpha,
+                        zorder=2 + z)
+            prefix = f"[overlay {self.overlay}] " if overlay else ""
+            lines.append(prefix + self._fit_text(key, fit, branches))
+        return lines
+
+    def _fit_text(self, key: tuple, fit: dict | None,
+                  branches: pd.DataFrame | None = None) -> str:
+        label = self._label(key, branches)
         if fit is None:
             return f"{label}:  too few points for a degree-{self.DEGREE} fit"
         parts = [f"E0 = {fit['E0']:.5f} ± {fit['E0_err']:.1e} eV",
@@ -328,6 +388,10 @@ class FitCompareViewer:
 
     def _on_session(self, session: str):
         self.session = session
+        self._load_session()
+
+    def _on_overlay(self, overlay: str):
+        self.overlay = overlay
         self._load_session()
 
     def _on_shared(self, _label):
@@ -372,7 +436,7 @@ class FitCompareViewer:
 
     def _save(self, _event):
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        stem = f"_{self.session}"
+        stem = f"_{self.session}" + ("" if self.overlay == 'none' else f"_vs_{self.overlay}")
         self.fig.canvas.draw()
         renderer = self.fig.canvas.get_renderer()  # pyright: ignore[reportAttributeAccessIssue]
         bbox = self.ax.get_tightbbox(renderer).transformed(  # pyright: ignore[reportOptionalMemberAccess]
@@ -381,13 +445,17 @@ class FitCompareViewer:
         self.fig.savefig(png, dpi=200, bbox_inches=bbox)
 
         rows = []
-        for key, fit in self.fits.items():
-            if not self.visible.get(key, True):
-                continue
-            rows.append({'experiment': key[0], 'branch': key[1],
-                         'branch_e0': self._rows(key)['branch_e0'].iloc[0],
-                         'session': self.session, 'include_shared': self.include_shared,
-                         **(fit or {'n_points': None})})
+        runs = [(self.session, self.branches, self.fits)]
+        if self.overlay != 'none':
+            runs.append((self.overlay, self.ov_branches, self.ov_fits))
+        for session, branches, fits in runs:
+            for key, fit in fits.items():
+                if not self.visible.get(key, True):
+                    continue
+                rows.append({'experiment': key[0], 'branch': key[1],
+                             'branch_e0': self._rows(key, branches)['branch_e0'].iloc[0],
+                             'session': session, 'include_shared': self.include_shared,
+                             **(fit or {'n_points': None})})
         csv = self.output_dir / f"branch_fits{stem}.csv"
         pd.DataFrame(rows).to_csv(csv, index=False)
         print(f"Saved -> {png}\nSaved -> {csv}")
