@@ -9,12 +9,13 @@ Key components:
 - fit_branch: weighted polynomial E(B) = E0 + a·B (+ b·B²) for one branch
 - FitCompareViewer: interactive window — tracked branches (energy vs field)
   per experiment with error bars, shared/bad-fit flags and trend fits;
-  branch toggles, fit-session picker, save PNG + coefficient CSV
+  branch toggles, fit-session picker, save PNG + coefficient CSV;
+  click a point to view that spectrum's saved fit plot
 
 Rules: works only on the fit_results DataFrame (load_fit_results) — no
 refitting. A "series" is an experiment (sweep folder). Each spectrum's
 latest fit session is used unless fit_number is given. No paths live here;
-callers pass output_dir.
+callers pass output_dir (the processed_pl_dir PLFitter saved to).
 
 Loading, fitting and the single-peak track_peak live in steady_state.
 """
@@ -24,6 +25,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
 from matplotlib.widgets import Button, CheckButtons
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
@@ -134,6 +136,9 @@ class FitCompareViewer:
 
     Controls: one checkbox per (experiment, branch); "Session" cycles
     latest → each fit_number; "Include shared points in trend fit"; Save.
+    Clicking any point (branch or grey) shows that spectrum's saved fit plot,
+    <output_dir>/<experiment>/plots/fits_<fit_number>/<stem>_fit.png, in a
+    separate window that is reused by later clicks.
 
     Save writes <output_dir>/branch_compare_<session>.png and
     <output_dir>/branch_fits_<session>.csv (coefficients of the visible
@@ -169,6 +174,9 @@ class FitCompareViewer:
         self.cb_branches: CheckButtons | None = None
         self.branches = pd.DataFrame()
         self.fits: dict[tuple, dict | None] = {}
+        self._pick_rows: dict = {}             # plotted point artist → its rows, for click-to-open
+        self._last_click = None                # one click can pick several overlapping artists
+        self._preview: Figure | None = None
 
     @property
     def fit_number(self) -> int | None:
@@ -192,6 +200,7 @@ class FitCompareViewer:
         self.btn_save = Button(ax_save, 'Save')
         self.btn_save.on_clicked(self._save)
 
+        self.fig.canvas.mpl_connect('pick_event', self._on_pick)
         self._load_session()
         plt.show(block=True)
 
@@ -259,9 +268,11 @@ class FitCompareViewer:
     def _draw(self):
         ax = self.ax
         ax.cla()
+        self._pick_rows = {}
         context = _latest_saves(self.df, self.fit_number).dropna(subset=['field'])
-        ax.plot(context['field'], context['energy'], '.', color='0.8', zorder=1,
-                label='All fitted peaks')
+        artist, = ax.plot(context['field'], context['energy'], '.', color='0.8', zorder=1,
+                          label='All fitted peaks', picker=5)
+        self._pick_rows[artist] = context
 
         lines = []
         for key, fit in self.fits.items():
@@ -273,10 +284,12 @@ class FitCompareViewer:
             shared = rows['shared'].astype(bool)
             ax.errorbar(rows['field'], rows['energy'], yerr=rows['energy_err'],
                         color=color, lw=0.8, capsize=2, marker='none', zorder=2)
-            ax.plot(rows['field'][~shared], rows['energy'][~shared], marker, color=color,
-                    zorder=3, label=self._label(key))
-            ax.plot(rows['field'][shared], rows['energy'][shared], marker, color=color,
-                    mfc='none', zorder=3)
+            artist, = ax.plot(rows['field'][~shared], rows['energy'][~shared], marker,
+                              color=color, zorder=3, label=self._label(key), picker=5)
+            self._pick_rows[artist] = rows[~shared]
+            artist, = ax.plot(rows['field'][shared], rows['energy'][shared], marker,
+                              color=color, mfc='none', zorder=3, picker=5)
+            self._pick_rows[artist] = rows[shared]
             bad = self._bad(rows)
             ax.plot(rows['field'][bad], rows['energy'][bad], 'x', color='black', ms=9, zorder=4)
 
@@ -327,6 +340,35 @@ class FitCompareViewer:
         key = keys[[self._label(k) for k in keys].index(label)]
         self.visible[key] = not self.visible[key]
         self._draw()
+
+    def _on_pick(self, event):
+        rows = self._pick_rows.get(event.artist)
+        if rows is None or event.mouseevent is self._last_click or len(event.ind) == 0:
+            return
+        self._last_click = event.mouseevent
+        self._show_fit_plot(rows.iloc[event.ind[0]])
+
+    def _fit_plot_path(self, row: pd.Series) -> Path:
+        """Where PLFitter saved this spectrum's fit plot (see PLFitter._fits_dir)."""
+        return (self.output_dir / str(row['experiment']) / 'plots'
+                / f"fits_{int(row['fit_number'])}" / f"{Path(row['filename']).stem}_fit.png")
+
+    def _show_fit_plot(self, row: pd.Series):
+        path = self._fit_plot_path(row)
+        if not path.exists():
+            print(f"No saved fit plot: {path}")
+            return
+        if self._preview is None or not plt.fignum_exists(self._preview.number):
+            self._preview = plt.figure(figsize=(8, 5))
+        fig = self._preview
+        fig.clf()
+        ax = fig.add_axes((0, 0, 1, 1))
+        ax.imshow(mpimg.imread(path))
+        ax.axis('off')
+        fig.canvas.manager.set_window_title(  # pyright: ignore[reportOptionalMemberAccess]
+            f"{row['experiment']} / {row['filename']} — fit {int(row['fit_number'])}")
+        fig.show()
+        fig.canvas.draw_idle()
 
     def _save(self, _event):
         self.output_dir.mkdir(parents=True, exist_ok=True)
