@@ -95,9 +95,9 @@ COMPARISON PLOTS — run the #%% cells below interactively in VS Code
 #%%
 # ---- Imports and config (uncomment and run this cell first for interactive use) ---- #
 
-from opespec.steady_state import PLFitter, load_fit_results, plot_peak_param, track_peak
+from opespec.steady_state import PLFitter, load_fit_results, plot_peak_param
 from opespec.pl_sweep import SweepContourBuilder, brightest_point
-from opespec.pl_fit_compare import FitCompareViewer, track_branches, fit_branch
+from opespec.pl_fit_compare import FitCompareViewer, track_branches, track_peak, fit_branch
 from opespec.utilities import load_config, select_files, select_directory
 from opespec.obsidian_integration import sync_pl_sweep
 
@@ -116,8 +116,8 @@ from opespec.obsidian_integration import sync_pl_sweep
 # Peak energy vs magnetic field, one series per sample:
 # plot_peak_param(results, x_col='field', y_col='energy', peak_index=0, group_by='sample')
 
-# Track the peak brightest at B = 0 through the field sweep (nearest energy, field to field):
-# plot_peak_param(track_peak(results), x_col='field', y_col='energy', group_by='sample',
+# Track the peak brightest at B = 0 through each field sweep (the brightest branch below):
+# plot_peak_param(track_peak(results), x_col='field', y_col='energy', group_by='experiment',
 #                 title='Tracked peak energy vs field')
 
 # Every B = 0 peak as a branch, and a quadratic E(B) trend per branch (the --mode compare window, as tables):

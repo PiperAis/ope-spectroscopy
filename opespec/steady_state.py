@@ -10,10 +10,10 @@ Key components:
   fit_results.csv regenerated from the .nc files
 - load_fit_results / plot_peak_param: load fit_results.csv and plot any
   parameter pair across datasets (energy vs field, width vs temperature, etc.)
-- track_peak: follow one fitted peak through a field sweep
 
 Sweep maps (spectra vs. field, contour builder) live in pl_sweep, which
-builds on load_pl_data and _EnergyRangeControl from here.
+builds on load_pl_data and _EnergyRangeControl from here. Following peaks
+through a sweep (track_branches, track_peak) lives in pl_fit_compare.
 """
 
 import warnings
@@ -1430,43 +1430,6 @@ def _latest_saves(df: pd.DataFrame, fit_number: int | None = None) -> pd.DataFra
     latest = data['fit_number'].groupby([data[k] for k in _SPECTRUM_KEYS],
                                         dropna=False).transform('max')
     return data[data['fit_number'] == latest]
-
-
-def track_peak(df: pd.DataFrame, fit_number: int | None = None) -> pd.DataFrame:
-    """
-    Follow one peak through each field sweep: one row per fitted spectrum.
-
-    For each (sample, spot), the starting peak is the largest-amplitude peak
-    at the field closest to 0 (warns if no B = 0 spectrum). From there, walk
-    outward through the fields in each direction, taking at each field the
-    peak nearest in energy to the one tracked at the previous field. Spectra
-    sharing a field are each matched to that previous energy. Each spectrum's
-    latest fit (highest fit_number) is used, or the given fit_number only.
-    """
-    data = _latest_saves(df, fit_number)
-    tracked = []
-    for (sample, spot), sweep in data.groupby(['sample', 'spot'], dropna=False):
-        sweep = sweep.dropna(subset=['field'])
-        if sweep.empty:
-            continue
-        fields = np.sort(sweep['field'].unique())
-        f0 = fields[np.argmin(np.abs(fields))]
-        if f0 != 0:
-            warnings.warn(f"{sample} / {spot}: no B = 0 spectrum; tracking from {f0} T.")
-        at_f0 = sweep[sweep['field'] == f0]
-        start = at_f0.loc[at_f0['amplitude'].idxmax()]
-
-        for direction in (fields[fields > f0], fields[fields < f0][::-1], [f0]):
-            ref = start['energy']
-            for f in direction:
-                chosen = []
-                for _, spectrum in sweep[sweep['field'] == f].groupby('filename'):
-                    chosen.append(spectrum.loc[(spectrum['energy'] - ref).abs().idxmin()])
-                tracked.extend(chosen)
-                ref = np.mean([row['energy'] for row in chosen])
-    if not tracked:
-        return data.iloc[0:0]
-    return pd.DataFrame(tracked).sort_values(['sample', 'spot', 'field']).reset_index(drop=True)
 
 
 def plot_peak_param(df: pd.DataFrame, x_col: str, y_col: str,

@@ -171,7 +171,7 @@ An interactive matplotlib window opens:
 - `processed_pl_dir/fit_results.csv`, regenerated from the `.nc` files on every save: a row per peak per session, with 1σ errors, `width_shared` / `width_locked` / `energy_spaced` flags (plus `spacing` / `spacing_err` on spaced peaks), the fit window (`fit_emin`/`fit_emax`), fit quality (`rmse`, `r_squared`) and `saved_at`, tagged with `experiment` (the sweep folder) and `fit_number`. Edit the `.nc` files, not the CSV; the CSV is overwritten.
 - a clean fit-overlay PNG to `processed_pl_dir/<experiment>/plots/fits_<n>/<stem>_fit.png`.
 
-Each fitter run is a new fit session, and `n` (= `fit_number`) counts up from the highest existing `fits_<n>` folder for that experiment. Re-saving a spectrum in the same session replaces that session's fit and plot. Earlier sessions are kept, so iterations can be compared. `track_peak` uses each spectrum's latest fit by default; pass `fit_number=` to use a specific session. `fit_number` 0 holds fits saved before sessions were numbered.
+Each fitter run is a new fit session, and `n` (= `fit_number`) counts up from the highest existing `fits_<n>` folder for that experiment. Re-saving a spectrum in the same session replaces that session's fit and plot. Earlier sessions are kept, so iterations can be compared. `track_branches` and `track_peak` use each spectrum's latest fit by default; pass `fit_number=` to use a specific session. `fit_number` 0 holds fits saved before sessions were numbered.
 
 **Editing a fit session:** `--edit-session N` (or `PLFitter(..., edit_session=N)`) saves into existing session N instead of starting a new one. Pass `--edit-session` with no number to list the folder's sessions and pick one. Spectra fitted in that session open with the saved fit drawn exactly as stored (no refit), along with their markers, fit window and baseline type. If the fit had a shared-width group, its shared FWHM and Lock state are restored too, so a refit keeps the same constraint. Spectra not in the session open as usual and can be added to it. Save replaces the spectrum's fit in that session and overwrites its `fits_<N>/` plot. Sessions migrated from the CSV alone open with markers only and need a refit before saving.
 
@@ -225,9 +225,9 @@ After fitting, open `steady_state_driver.py` in VS Code (or your Python environm
 |---|---|
 | `trr_dataset` | xarray accessor (`trrxr`) for TRR data; loading and dataset-level operations |
 | `processing_state` | `ProcessingState` — linear pipeline orchestrator for TRR (noise → normalize → subtract → FFT) |
-| `steady_state` | `load_pl_data`; `PLFitter` interactive fitter; `load_fit_results` / `plot_peak_param` / `track_peak` for cross-dataset comparison |
+| `steady_state` | `load_pl_data`; `PLFitter` interactive fitter; `load_fit_results` / `plot_peak_param` for cross-dataset comparison |
 | `pl_sweep` | Spectra vs. a sweep variable (`SWEEPS`: field or temperature): `SweepContourBuilder` interactive contour-plot builder; `brightest_point` |
-| `pl_fit_compare` | Cross-dataset comparison of saved fits: `track_branches` (all B = 0 peaks through a field sweep), `fit_branch` (quadratic E(B) trend), `FitCompareViewer` interactive window |
+| `pl_fit_compare` | Cross-dataset comparison of saved fits: `track_branches` (all B = 0 peaks through a field sweep), `track_peak` (the brightest branch only), `fit_branch` (quadratic E(B) trend), `FitCompareViewer` interactive window |
 | `fitting_functions` | Shared fitting primitives (exponential decay, Lorentzian, Gaussian, peak finding) |
 | `fft_functions` | FFT-based noise analysis utilities |
 | `noise_remover` | Noise removal step used in the TRR pipeline |

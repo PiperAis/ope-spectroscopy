@@ -6,6 +6,7 @@ Key components:
 - track_branches: follow every peak of the seed fit (B = 0, or the lowest
   temperature) through each sweep (experiment), nearest energy step to
   step; flags points shared by more than one branch (merged peaks)
+- track_peak: the brightest branch only (largest-amplitude seed peak)
 - fit_branch: weighted polynomial E(B) = E0 + a·B (+ b·B²) for one branch
 - FitCompareViewer: interactive window — tracked branches (energy vs field)
   per experiment with error bars, shared/bad-fit flags and trend fits;
@@ -19,7 +20,7 @@ is passed explicitly (as in pl_sweep), never inferred. Each spectrum's
 latest fit session is used unless fit_number is given. No paths live here;
 callers pass output_dir (the processed_pl_dir PLFitter saved to).
 
-Loading, fitting and the single-peak track_peak live in steady_state.
+Loading and fitting live in steady_state.
 """
 
 import warnings
@@ -50,7 +51,7 @@ def track_branches(df: pd.DataFrame, fit_number: int | None = None,
     any other spectrum). Each seed is walked
     outward through the sweep values (both directions for field), taking at
     each step the peak nearest in energy to the one tracked at the previous
-    step (as track_peak does for the brightest peak only).
+    step.
 
     Returns one row per (branch, spectrum) with added columns:
       branch     0, 1, ... in order of seed energy, per experiment
@@ -98,6 +99,26 @@ def track_branches(df: pd.DataFrame, fit_number: int | None = None,
     n_branches = out.groupby(peak_id, dropna=False)['branch'].transform('nunique')
     out['shared'] = n_branches > 1
     return out.sort_values(['experiment', 'branch', sweep]).reset_index(drop=True)
+
+
+def track_peak(df: pd.DataFrame, fit_number: int | None = None,
+               sweep: str = 'field') -> pd.DataFrame:
+    """
+    Follow the brightest peak through each sweep: the branch of
+    track_branches seeded by the largest-amplitude peak of the seed
+    spectrum, per experiment (sweep folder).
+
+    Arguments, warnings and columns as track_branches; one row per
+    spectrum, sorted by experiment then the sweep variable.
+    """
+    branches = track_branches(df, fit_number, sweep)
+    if branches.empty:
+        return branches
+    seeds = branches[branches['energy'] == branches['branch_e0']]   # each branch's seed peak
+    best = seeds.loc[seeds.groupby('experiment', dropna=False)['amplitude'].idxmax(),
+                     ['experiment', 'branch']]
+    out = branches.merge(best, on=['experiment', 'branch'])
+    return out.sort_values(['experiment', sweep]).reset_index(drop=True)
 
 
 def fit_branch(rows: pd.DataFrame, degree: int = 2,
