@@ -21,12 +21,6 @@ from . import utilities
 
 #---Mathematical Functions---#
 
-def quadratic(p, x):
-    """ Generates values of a quadratic function of input x
-    where p = [a, b, c] for the function ax^2 + bx + c"""
-    x = np.array(x) 
-    return p[0] * x**2 + p[1]*x + p[2]
-
 def Gaussian(p: list, x, N=None):
     """ p = [amplitude, center, FWHM, amplitude, center, FWHM, ...] """
     if N is None:
@@ -105,9 +99,6 @@ LINESHAPES = {
     'gaussian':   Gaussian,
     'lorentzian': Lorentz,
 }
-
-def diffquad(p, x, y):
-    return np.sum((y-quadratic(p,x))**2)
 
 #----Generating and accessing fit parameters----#
 
