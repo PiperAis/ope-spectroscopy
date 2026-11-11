@@ -27,7 +27,6 @@ import numpy as np
 import pandas as pd
 import pathlib
 from pathlib import Path
-from scipy.optimize import curve_fit
 import warnings
 import xarray as xr
 
@@ -261,31 +260,3 @@ def divide_out_factors(data_array : xr.DataArray) -> xr.DataArray:
 
     data_array.values = data_array.values / (r_zero * scale_factor)
     return data_array
-
-def subtract_biexponential_decay(
-        x_data, 
-        y_data, 
-        time_constant1 : int = 50, 
-        time_constant2 : int = 175):
-    """
-    Fits a bi-exponential decay to the data and subtracts it, then 
-    plots the original data with the fit and returns the corrected data.
-    """
-
-    initial_guess = (y_data[0], time_constant1, y_data[0]/2, time_constant2, 
-                     np.mean(y_data))
-    params, _ = curve_fit(ff.bi_exp_decay, x_data, y_data, p0=initial_guess)
-
-    # Generate the fitted curve for all time points
-    fitted_curve = ff.bi_exp_decay(x_data, *params)
-
-    # Subtract fitted curve from original data
-    y_corrected = y_data - fitted_curve
-
-    plt.plot(x_data, y_data)
-    plt.plot(x_data, fitted_curve)
-    plt.title("Fit")
-    plt.show()
-
-    # Return new data array
-    return y_corrected

@@ -65,9 +65,6 @@ def exp_decay(t, A, B, C):
     """
     return A * np.exp(-B * t) + C
 
-def bi_exp_decay(t, A1, B1, A2, B2, C):
-    return A1 * np.exp(-B1 * t) + A2 * np.exp(-B2 * t) + C
-
 def param_covariance(jac, resid) -> np.ndarray:
     """
     Parameter covariance from a least-squares solution: cov = (JᵀJ)⁺ · SSE/(N − p),
