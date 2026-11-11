@@ -19,7 +19,6 @@ from pathlib import Path
 import re
 import warnings
 import yaml
-import xarray as xr
 
 _ROOT_DIR = Path(__file__).parent.parent
 _SETTINGS_KEYS = (
@@ -333,20 +332,3 @@ def get_file_names(dir : Path,
     filenames.sort()
 
     return filenames
-
-
-#----xarray utilities----#
-
-def mask_data_array(
-        data_array : xr.DataArray, 
-        min_time : int | float, 
-        max_time : int | float
-        ) -> xr.DataArray:
-    """ 
-    Returns a DataArray with datapoints outside of the given time
-    limits replaced with NaN. 
-    """
-    condition = (data_array >= min_time) and (data_array <= max_time)
-    new_array = data_array.where(condition).all()
-    
-    return xr.DataArray(new_array)
