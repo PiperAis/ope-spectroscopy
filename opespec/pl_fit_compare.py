@@ -129,13 +129,17 @@ class FitCompareViewer:
     Interactive window: fitted peak energy vs field, followed as branches
     (track_branches) through each experiment, with a trend fit per branch.
 
-    - Grey points: every fitted peak in the selected session (context).
+    - Grey points: the fitted peaks of the selected session (context). Peaks
+      only on hidden branches are left out, and an experiment with every
+      branch hidden shows no grey points at all.
     - Branches: colour = experiment, marker = branch, error bars = energy_err.
       Hollow markers are shared with another branch (merged peaks); a black ×
       flags a doubtful fit (r_squared < R2_MIN, or energy_err/width > REL_ERR_MAX).
     - Dashed line: fit_branch trend (quadratic); coefficients listed below.
 
-    Controls: one checkbox per (experiment, branch); "Session" cycles
+    Controls: one checkbox per experiment (ticked while any of its branches
+    is shown; a click hides all of them, or shows all if none were shown);
+    one checkbox per (experiment, branch); "Session" cycles
     latest → each fit_number; "Overlay" cycles none → latest → each
     fit_number; "Include shared points in trend fit"; Save.
     The overlay session is tracked and fitted on its own and drawn faded
@@ -180,8 +184,10 @@ class FitCompareViewer:
 
         self.fig: Figure  # created in run()
         self.ax: Axes
+        self.ax_experiments: Axes
         self.ax_toggles: Axes
         self.ax_text: Axes
+        self.cb_experiments: CheckButtons | None = None
         self.cb_branches: CheckButtons | None = None
         self.branches = pd.DataFrame()
         self.fits: dict[tuple, dict | None] = {}
@@ -202,7 +208,8 @@ class FitCompareViewer:
     def run(self):
         self.fig = plt.figure(figsize=(12, 8))
         self.ax = self.fig.add_axes((0.08, 0.42, 0.60, 0.53))
-        self.ax_toggles = self.fig.add_axes((0.72, 0.42, 0.27, 0.53))
+        self.ax_experiments = self.fig.add_axes((0.72, 0.80, 0.27, 0.15))
+        self.ax_toggles = self.fig.add_axes((0.72, 0.42, 0.27, 0.34))
         self.ax_text = self.fig.add_axes((0.02, 0.02, 0.96, 0.20))
         self.ax_text.axis('off')
 
@@ -256,8 +263,8 @@ class FitCompareViewer:
                 for key, rows in branches.groupby(['experiment', 'branch'])}
 
     def _keys(self) -> list[tuple]:
-        """Toggle keys: the main session's branches, then any only in the overlay."""
-        return list(self.fits) + [k for k in self.ov_fits if k not in self.fits]
+        """Toggle keys: every branch in the main or overlay session, by experiment then branch."""
+        return sorted({*self.fits, *self.ov_fits}, key=lambda k: (str(k[0]), k[1]))
 
     def _rows(self, key: tuple, branches: pd.DataFrame | None = None) -> pd.DataFrame:
         branches = self.branches if branches is None else branches
@@ -288,16 +295,41 @@ class FitCompareViewer:
     # Internal: drawing
     # ------------------------------------------------------------------
 
+    def _experiment_keys(self) -> dict:
+        """experiment → its toggle keys, in toggle order."""
+        groups: dict = {}
+        for k in self._keys():
+            groups.setdefault(k[0], []).append(k)
+        return groups
+
     def _build_toggles(self):
+        # Old widgets stay hooked to the canvas (clicks, redraws) after cla(); unhook them.
+        for cb in (self.cb_experiments, self.cb_branches):
+            if cb is not None:
+                cb.disconnect_events()
+        self.ax_experiments.cla()
         self.ax_toggles.cla()
         keys = self._keys()
         for k in keys:
             self.visible.setdefault(k, True)
         if not keys:
+            self.ax_experiments.axis('off')
             self.ax_toggles.axis('off')
+            self.cb_experiments = None
             self.cb_branches = None
             return
+        self.ax_experiments.axis('on')
         self.ax_toggles.axis('on')
+
+        groups = self._experiment_keys()
+        self.cb_experiments = CheckButtons(
+            self.ax_experiments, [str(e) for e in groups],
+            [any(self.visible[k] for k in ks) for ks in groups.values()])
+        for text in self.cb_experiments.labels:
+            text.set_fontsize(8)
+        self.cb_experiments.on_clicked(self._on_experiment)
+        self.ax_experiments.set_title('Experiments (all branches)', fontsize=9)
+
         self.cb_branches = CheckButtons(self.ax_toggles, [self._label(k) for k in keys],
                                         [self.visible[k] for k in keys])
         for text in self.cb_branches.labels:
@@ -305,13 +337,32 @@ class FitCompareViewer:
         self.cb_branches.on_clicked(self._on_toggle)
         self.ax_toggles.set_title('Branches (experiment · E at B≈0)', fontsize=9)
 
+    def _context(self) -> pd.DataFrame:
+        """Grey context points: the session's fitted peaks, minus peaks that are
+        only on hidden branches and every peak of an experiment with all branches hidden."""
+        context = _latest_saves(self.df, self.fit_number).dropna(subset=['field'])
+        if self.branches.empty:
+            return context
+        peak_id = ['experiment', 'filename', 'peak_index']
+        b = self.branches
+        shown = np.array([self.visible.get((e, br), True)
+                          for e, br in zip(b['experiment'], b['branch'])], dtype=bool)
+        hidden = (set(map(tuple, b.loc[~shown, peak_id].to_numpy()))
+                  - set(map(tuple, b.loc[shown, peak_id].to_numpy())))
+        keep = np.array([p not in hidden for p in map(tuple, context[peak_id].to_numpy())],
+                        dtype=bool)
+        off = [e for e, ks in self._experiment_keys().items()
+               if not any(self.visible.get(k, True) for k in ks)]
+        keep &= ~context['experiment'].isin(off).to_numpy()
+        return context[keep]
+
     def _draw(self):
         ax = self.ax
         ax.cla()
         self._pick_rows = {}
-        context = _latest_saves(self.df, self.fit_number).dropna(subset=['field'])
+        context = self._context()
         artist, = ax.plot(context['field'], context['energy'], '.', color='0.8', zorder=1,
-                          label='All fitted peaks', picker=5)
+                          label='Fitted peaks', picker=5)
         self._pick_rows[artist] = context
 
         lines = self._draw_branches(self.branches, self.fits)
@@ -403,6 +454,15 @@ class FitCompareViewer:
         keys = self._keys()
         key = keys[[self._label(k) for k in keys].index(label)]
         self.visible[key] = not self.visible[key]
+        self._build_toggles()   # the experiment's box may change with it
+        self._draw()
+
+    def _on_experiment(self, label):
+        keys = next(ks for e, ks in self._experiment_keys().items() if str(e) == label)
+        show = not any(self.visible[k] for k in keys)
+        for k in keys:
+            self.visible[k] = show
+        self._build_toggles()
         self._draw()
 
     def _on_pick(self, event):
