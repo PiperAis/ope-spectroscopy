@@ -48,6 +48,8 @@ def load_pl_data(filepath: Path, variable: str = 'raw') -> xr.DataArray:
     'raw', 'baseline', 'subtracted'; `variable` picks one, and the Dataset's
     attrs (metadata + fit settings) are carried onto the returned array.
     A single-variable .nc (older format) is returned for variable='raw'.
+    Metadata found in the filename or the folder's metadata.txt replaces the
+    stored value (with a warning if they differ).
     """
     filepath = Path(filepath)
     if filepath.suffix == '.nc':
@@ -78,10 +80,20 @@ def load_pl_data(filepath: Path, variable: str = 'raw') -> xr.DataArray:
         array.energy.attrs['units'] = 'eV'
 
     # Resolve metadata (filename + folder metadata.txt) once, at load time.
-    # setdefault: attrs already stored in a .nc file take precedence.
-    metadata = utilities.get_metadata(filepath)
+    # A value found there wins over one stored in a .nc at save time (warning
+    # if they differ), so later metadata.txt edits take effect. PLFitter's Save
+    # copies the raw folder's metadata.txt next to the .nc for this.
+    # Stored attrs are kept when nothing is found; defaults fill the rest.
+    found = utilities.get_metadata(filepath, defaults=False)
     for key in _METADATA_KEYS:
-        array.attrs.setdefault(key, metadata[key])
+        value, stored = found.get(key), array.attrs.get(key)
+        if value is not None:
+            if stored is not None and stored != value:
+                warnings.warn(f"{filepath.name}: {key}={value!r} from filename/"
+                              f"{utilities.METADATA_FILENAME} replaces stored {stored!r}")
+            array.attrs[key] = value
+        elif stored is None:
+            array.attrs[key] = utilities._METADATA_DEFAULTS[key]
 
     return array.sortby('energy')
 
@@ -505,6 +517,23 @@ def _upsert_rows_csv(csv_path: Path, df: pd.DataFrame, keys: list[str]):
 
 _PEAK_KEYS = ('energy', 'energy_err', 'width', 'width_err',
               'amplitude', 'amplitude_err', 'area', 'area_err')
+
+
+def _copy_folder_metadata(raw_folder: Path, processed_folder: Path):
+    """
+    Copy raw_folder's metadata.txt into processed_folder (if it exists and the
+    copy differs), so a processed .nc resolves the same folder metadata as its
+    raw file on load. The raw copy is the source of truth: re-saving
+    overwrites edits made to the processed copy.
+    """
+    src = raw_folder / utilities.METADATA_FILENAME
+    dst = processed_folder / utilities.METADATA_FILENAME
+    if not src.exists() or (dst.exists() and dst.read_bytes() == src.read_bytes()):
+        return
+    if dst.exists():
+        print(f"Updating {dst} from {src}")
+    dst.write_bytes(src.read_bytes())
+    utilities._read_folder_metadata.cache_clear()
 
 
 def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, lineshape: str,
@@ -1046,6 +1075,7 @@ class PLFitter:
         _save_processed_spectrum(nc_path, self.data, result,
                                  result['lineshape'], experiment, fit_number)
         print(f"Spectrum → {nc_path}")
+        _copy_folder_metadata(filepath.parent, nc_path.parent)
 
         self._saved = True
         self._update_title()

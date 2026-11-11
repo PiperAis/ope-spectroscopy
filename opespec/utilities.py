@@ -263,12 +263,14 @@ def _read_folder_metadata(folder: Path) -> dict:
         raise ValueError(f"{path} must contain 'key: value' lines.")
     return metadata
 
-def get_metadata(filepath: str | Path) -> dict:
+def get_metadata(filepath: str | Path, defaults: bool = True) -> dict:
     """
     Merged metadata for a data file. Values parsed from the filename
     override those in metadata.txt in the file's folder (warning on
     conflict). Keys: sample, spot, field, temperature, scale_factor,
-    rzero, plus any extra keys from metadata.txt.
+    rzero, plus any extra keys from metadata.txt. A key found in neither
+    gets its default, or None if defaults=False (to tell "not found"
+    apart from a default value).
     """
     filepath = Path(filepath)
     name = filepath.name
@@ -295,7 +297,7 @@ def get_metadata(filepath: str | Path) -> dict:
                               f"{METADATA_FILENAME} {key}={folder_value!r}")
             metadata[key] = value
         elif folder_value is None:
-            metadata[key] = _METADATA_DEFAULTS[key]
+            metadata[key] = _METADATA_DEFAULTS[key] if defaults else None
 
     return metadata
 
