@@ -130,8 +130,8 @@ class FitCompareViewer:
     (track_branches) through each experiment, with a trend fit per branch.
 
     - Grey points: the fitted peaks of the selected session (context). Peaks
-      only on hidden branches are left out, and an experiment with every
-      branch hidden shows no grey points at all.
+      only on hidden branches are left out; an experiment's peaks on no
+      branch show only while all of its branches are shown.
     - Branches: colour = experiment, marker = branch, error bars = energy_err.
       Hollow markers are shared with another branch (merged peaks); a black ×
       flags a doubtful fit (r_squared < R2_MIN, or energy_err/width > REL_ERR_MAX).
@@ -338,8 +338,9 @@ class FitCompareViewer:
         self.ax_toggles.set_title('Branches (experiment · E at B≈0)', fontsize=9)
 
     def _context(self) -> pd.DataFrame:
-        """Grey context points: the session's fitted peaks, minus peaks that are
-        only on hidden branches and every peak of an experiment with all branches hidden."""
+        """Grey context points: the session's fitted peaks that are on a shown
+        branch, plus an experiment's peaks on no branch only while all of that
+        experiment's branches (in this session) are shown."""
         context = _latest_saves(self.df, self.fit_number).dropna(subset=['field'])
         if self.branches.empty:
             return context
@@ -347,14 +348,13 @@ class FitCompareViewer:
         b = self.branches
         shown = np.array([self.visible.get((e, br), True)
                           for e, br in zip(b['experiment'], b['branch'])], dtype=bool)
-        hidden = (set(map(tuple, b.loc[~shown, peak_id].to_numpy()))
-                  - set(map(tuple, b.loc[shown, peak_id].to_numpy())))
-        keep = np.array([p not in hidden for p in map(tuple, context[peak_id].to_numpy())],
-                        dtype=bool)
-        off = [e for e, ks in self._experiment_keys().items()
-               if not any(self.visible.get(k, True) for k in ks)]
-        keep &= ~context['experiment'].isin(off).to_numpy()
-        return context[keep]
+        on_shown = set(map(tuple, b.loc[shown, peak_id].to_numpy()))
+        on_any = set(map(tuple, b[peak_id].to_numpy()))
+        all_shown = {e for e, s in pd.Series(shown, index=b.index).groupby(b['experiment']).all()
+                     .items() if s}
+        keep = [p in on_shown or (p not in on_any and p[0] in all_shown)
+                for p in map(tuple, context[peak_id].to_numpy())]
+        return context[np.array(keep, dtype=bool)]
 
     def _draw(self):
         ax = self.ax
