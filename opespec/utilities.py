@@ -216,14 +216,12 @@ def get_rzero(filename : str | Path, default=1) -> float:
 
 def get_spot(filename: str, default='unknown spot') -> str:
     """
-    Gets spot from filename.
-    Assumes pattern like '-spot1-' after sample.
+    Gets spot from filename: the single dash-delimited token starting with
+    'spot', anywhere in the name (e.g. '-spot1-' → 'Spot 1', '-spotOL.csv' → 'Spot OL').
     """
-    spot_match = re.search(r'spot.*-', filename)
+    spot_match = re.search(r'(?:^|-)spot([^-.]+)', str(filename))
     if spot_match:
-        spot = spot_match.group(0)
-        spot = spot.replace('-', '').replace('spot', 'Spot ')
-        return spot
+        return 'Spot ' + spot_match.group(1)
     return default
 
 def get_temperature(filename: str | Path) -> float | None:
