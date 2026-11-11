@@ -68,22 +68,6 @@ def exp_decay(t, A, B, C):
 def bi_exp_decay(t, A1, B1, A2, B2, C):
     return A1 * np.exp(-B1 * t) + A2 * np.exp(-B2 * t) + C
 
-#----Differences between data and fits, could be collapsed into one function later----#
-
-def diffG(p0: list, x, y, N=None):
-    """
-    p0: parameter vector [amplitude, center, FWHM, ...]
-    Fixed parameters are handled via tight bounds in generateParams_fixed.
-    """
-    num_peaks = len(p0) // 3
-    return np.sum((y - Gaussian(p0, x, num_peaks))**2)
-
-def diffL(p : list, x, y, N=None):
-    ''' Takes the difference between y and a Lorentzian with 
-    parameters p where p = [height, center, FWHM]'''
-    difference = np.sum((y - Lorentz(p, x, N))**2)
-    return difference
-
 def param_covariance(jac, resid) -> np.ndarray:
     """
     Parameter covariance from a least-squares solution: cov = (JᵀJ)⁺ · SSE/(N − p),
@@ -119,10 +103,10 @@ def fit_quality(resid, y, n_params: int) -> dict:
     r_squared = 1 - sse / sst if dof > 0 and sst > 0 else np.nan
     return {'n_points': n_points, 'dof': dof, 'rmse': rmse, 'r_squared': r_squared}
 
-# lineshape name -> (model function, sum-of-squares objective)
+# lineshape name -> model function
 LINESHAPES = {
-    'gaussian':   (Gaussian, diffG),
-    'lorentzian': (Lorentz, diffL),
+    'gaussian':   Gaussian,
+    'lorentzian': Lorentz,
 }
 
 def diffquad(p, x, y):

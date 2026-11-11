@@ -291,7 +291,7 @@ def _peak_results(fit: np.ndarray, err: np.ndarray, cov: np.ndarray,
     and their 1σ errors / covariance: energy, width, amplitude, area (each with
     _err) and the peak's curve 'y' over x.
     """
-    fn, _ = ff.LINESHAPES[lineshape]
+    fn = ff.LINESHAPES[lineshape]
     peaks = []
     for j in range(len(fit) // 3):
         ia, ie, iw = 3*j, 3*j + 1, 3*j + 2
@@ -438,7 +438,7 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
     p0 = q0 + bl0
     bounds = q_bounds + bl_bounds
 
-    fn, _ = ff.LINESHAPES[lineshape]
+    fn = ff.LINESHAPES[lineshape]
 
     # least_squares takes (lo, hi) arrays and needs lo < hi, so fixed parameters
     # can't be given equal bounds; a locked width is a constant in _constraint_map instead.
