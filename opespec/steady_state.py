@@ -455,32 +455,34 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
         # magnitudes (heights ~1e3, centers ~1 eV, widths ~1e-2), which made the old
         # scalar L-BFGS-B fit stop well short of the minimum.
         result = least_squares(residuals, p0, bounds=(lo, hi), x_scale='jac')
-        bl = _baseline_from_params(baseline, result.x[-k:], xc)
-        fit = M @ result.x[:-k] + c
-        y_sub = y - _eval_baseline(bl, x)   # new name: `y` stays the raw data residuals() uses
-
-        # 1σ uncertainties from the Jacobian (residual variance estimated from the fit),
-        # mapped from the solver's free parameters back to every peak's (amp, center, width).
-        cov_q = ff.param_covariance(result.jac, result.fun)[:-k, :-k]
-        cov = M @ cov_q @ M.T
-        err = np.sqrt(np.clip(np.diag(cov), 0, None))
-
-        peaks = _peak_results(fit, err, cov, lineshape, x)
-        for peak, s, sp in zip(peaks, shared, spaced):
-            peak['shared'] = bool(s)
-            peak['spaced'] = bool(sp)
-        i_sp = idx['spacing']
-        return {'peaks': peaks,
-                'x_fit': x, 'y_total': fn(fit, x),
-                'y_data': y_sub, 'baseline': bl,
-                'width_locked': shared_width is not None and any(shared),
-                'spacing': None if i_sp is None else float(result.x[i_sp]),
-                'spacing_err': None if i_sp is None else float(np.sqrt(max(cov_q[i_sp, i_sp], 0.0))),
-                **ff.fit_quality(result.fun, y, len(p0))}
-
     except Exception as e:
+        # Only solver failures are reported this way; a bug in the result
+        # processing below raises normally instead of looking like a failed fit.
         print(f"Fit error: {e}")
         return None
+
+    bl = _baseline_from_params(baseline, result.x[-k:], xc)
+    fit = M @ result.x[:-k] + c
+    y_sub = y - _eval_baseline(bl, x)   # new name: `y` stays the raw data residuals() uses
+
+    # 1σ uncertainties from the Jacobian (residual variance estimated from the fit),
+    # mapped from the solver's free parameters back to every peak's (amp, center, width).
+    cov_q = ff.param_covariance(result.jac, result.fun)[:-k, :-k]
+    cov = M @ cov_q @ M.T
+    err = np.sqrt(np.clip(np.diag(cov), 0, None))
+
+    peaks = _peak_results(fit, err, cov, lineshape, x)
+    for peak, s, sp in zip(peaks, shared, spaced):
+        peak['shared'] = bool(s)
+        peak['spaced'] = bool(sp)
+    i_sp = idx['spacing']
+    return {'peaks': peaks,
+            'x_fit': x, 'y_total': fn(fit, x),
+            'y_data': y_sub, 'baseline': bl,
+            'width_locked': shared_width is not None and any(shared),
+            'spacing': None if i_sp is None else float(result.x[i_sp]),
+            'spacing_err': None if i_sp is None else float(np.sqrt(max(cov_q[i_sp, i_sp], 0.0))),
+            **ff.fit_quality(result.fun, y, len(p0))}
 
 
 def _row_keys(frame: pd.DataFrame, keys: list[str]) -> pd.MultiIndex:
