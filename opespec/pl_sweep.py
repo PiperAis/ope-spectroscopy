@@ -35,7 +35,7 @@ from matplotlib.axes import Axes
 from matplotlib.colorbar import Colorbar
 from . import utilities
 from .steady_state import (load_pl_data, _spectrum_paths, _EnergyRangeControl, _CycleButton,
-                           _METADATA_KEYS)
+                           _METADATA_KEYS, _pick_session)
 
 xr.set_options(keep_attrs=True)
 
@@ -53,16 +53,22 @@ def _check_sweep(sweep: str) -> dict:
     return SWEEPS[sweep]
 
 
-def _has_variable(filepath: Path, variable: str) -> bool:
-    """True if filepath is a processed .nc containing `variable`."""
+def _has_variable(filepath: Path, variable: str, fit_number: int | None = None) -> bool:
+    """True if filepath is a processed .nc containing `variable` — for a
+    per-session variable, stored for fit_number (or the highest session)."""
     if filepath.suffix != '.nc':
         return variable == 'raw'
     with xr.open_dataset(filepath) as ds:
-        return variable in ds.data_vars
+        if variable not in ds.data_vars:
+            return False
+        if 'fit_number' not in ds[variable].dims:
+            return True
+        n = _pick_session(ds, fit_number)
+        return n is not None and not bool(ds[variable].sel(fit_number=n).isnull().all())
 
 
 def _load_sweep_map(files: Path | list[Path], variable: str = 'raw',
-                    sweep: str = 'field') -> xr.DataArray:
+                    sweep: str = 'field', fit_number: int | None = None) -> xr.DataArray:
     """
     Loads a set of PL spectra into one 2D (sweep, energy) DataArray.
 
@@ -70,7 +76,8 @@ def _load_sweep_map(files: Path | list[Path], variable: str = 'raw',
     list, one spectrum per sweep value. variable: 'raw', or 'subtracted' /
     'baseline' from processed .nc files. sweep: a key of SWEEPS ('field' or
     'temperature'); each spectrum's value comes from its attrs (filename /
-    metadata.txt). Sorted by sweep value (not acquisition order), since
+    metadata.txt). fit_number: the fit session 'subtracted' / 'baseline' come
+    from (each spectrum's highest if None). Sorted by sweep value (not acquisition order), since
     B-field sweeps commonly ramp up then back down through zero.
 
     The sweep attr becomes the coordinate. The other metadata attrs must
@@ -88,7 +95,7 @@ def _load_sweep_map(files: Path | list[Path], variable: str = 'raw',
     others = [k for k in _METADATA_KEYS if k != sweep]
     seen = {k: {} for k in others}   # attr → {value: first filename with it}
     for filepath in _spectrum_paths(files):
-        da = load_pl_data(filepath, variable=variable)
+        da = load_pl_data(filepath, variable=variable, fit_number=fit_number)
         value = da.attrs[sweep]
         if value is None:
             warnings.warn(f"Could not parse {info['long_name'].lower()} from filename or "
@@ -154,6 +161,8 @@ class SweepContourBuilder:
     Input is a raw sweep folder (CSVs) or a processed sweep folder (.nc files
     written by PLFitter's Save). If every spectrum has been fitted, a
     "Data" button switches between baseline-subtracted (default) and raw.
+    The subtracted data comes from each spectrum's latest fit session, or
+    from fit_number if given.
 
     Usage:
         files = select_directory(Path(cfg['processed_pl_dir']))
@@ -169,14 +178,15 @@ class SweepContourBuilder:
     SMOOTH_POLYORDER = 3
     DEFAULT_SMOOTH_WINDOW = 11   # points along energy; must be odd and > polyorder
 
-    def __init__(self, files: Path | list[Path], output_dir: Path, sweep: str = 'field'):
+    def __init__(self, files: Path | list[Path], output_dir: Path, sweep: str = 'field',
+                 fit_number: int | None = None):
         _check_sweep(sweep)
         self.sweep = sweep
         paths = _spectrum_paths(files)
         self.maps = {'raw': _load_sweep_map(paths, 'raw', sweep)}
-        unfitted = [p.name for p in paths if not _has_variable(p, 'subtracted')]
+        unfitted = [p.name for p in paths if not _has_variable(p, 'subtracted', fit_number)]
         if not unfitted:
-            self.maps['subtracted'] = _load_sweep_map(paths, 'subtracted', sweep)
+            self.maps['subtracted'] = _load_sweep_map(paths, 'subtracted', sweep, fit_number)
         elif any(p.suffix == '.nc' for p in paths):
             warnings.warn(f"{len(unfitted)} spectra have no baseline-subtracted data "
                           f"(not fitted/saved yet), showing raw only: {', '.join(unfitted)}")
@@ -357,13 +367,14 @@ class SweepContourBuilder:
 
 def brightest_point(folders: list[Path], variable: str = 'raw',
                     emin: float | None = None, emax: float | None = None,
-                    sweep: str = 'field') -> pd.DataFrame:
+                    sweep: str = 'field', fit_number: int | None = None) -> pd.DataFrame:
     """
     Energy of the highest-intensity data point in each spectrum, vs. the
     sweep variable (sweep='field' or 'temperature').
 
     folders: sweep folders (raw CSV or processed .nc), one per sample/sweep.
-    variable: 'raw' or 'subtracted' (processed .nc only). emin/emax optionally
+    variable: 'raw' or 'subtracted' (processed .nc only; from fit session
+    fit_number, or each spectrum's latest if None). emin/emax optionally
     restrict the search to an energy window (eV). No fitting or smoothing:
     the result is the argmax of the data itself, so it is noise-limited and
     quantized to the energy grid.
@@ -373,7 +384,7 @@ def brightest_point(folders: list[Path], variable: str = 'raw',
     """
     rows = []
     for folder in folders:
-        smap = _load_sweep_map(folder, variable, sweep).sel(energy=slice(emin, emax))
+        smap = _load_sweep_map(folder, variable, sweep, fit_number).sel(energy=slice(emin, emax))
         imax = smap.argmax('energy')
         for value, energy, intensity in zip(smap[sweep].values,
                                             smap['energy'][imax].values,

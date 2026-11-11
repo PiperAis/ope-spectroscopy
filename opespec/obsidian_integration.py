@@ -168,7 +168,7 @@ def sync_pl_sweep(processed_sweep_dir: Path, raw_sweep_dir: Path,
     other metadata.txt keys under their own names. See _pl_metadata.
 
     The plot is the spectrum's latest saved fit, plots/fits_<fit_number>/<stem>_fit.png
-    (fit_number from the .nc attrs); its vault name includes the sweep so wikilinks
+    (the .nc's highest fit_number); its vault name includes the sweep so wikilinks
     stay unique across experiments.
 
     Existing notes: generated properties (Type, Experiment, metadata, Filename,
@@ -201,6 +201,8 @@ def sync_pl_sweep(processed_sweep_dir: Path, raw_sweep_dir: Path,
         stem = nc_file.stem
         with xr.open_dataset(nc_file) as ds:
             attrs = dict(ds.attrs)
+            if 'fit_number' in ds.dims:   # one entry per fit session; the latest is used
+                attrs['fit_number'] = int(ds['fit_number'].max())
 
         # Note name from the ## prefix; the full stem if the prefix is missing or shared.
         if prefix.isdigit() and prefixes.count(prefix) == 1:

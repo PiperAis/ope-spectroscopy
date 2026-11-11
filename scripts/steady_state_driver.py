@@ -25,13 +25,14 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
     fit, range and baseline; the title shows whether the fit has been saved.
 
     Save writes, per spectrum:
-      <processed_pl_dir>/fit_results.csv          one row per peak, with 1σ errors, fit
-                                                  window, RMSE/R²; tagged experiment +
-                                                  fit_number (re-save replaces this session's rows)
+      <processed_pl_dir>/<sweep>/<stem>.nc        raw data + every fit session's baseline /
+                                                  subtracted data, settings and results
+                                                  (re-save replaces this session's fit)
+      <processed_pl_dir>/fit_results.csv          regenerated from the .nc files: one row per
+                                                  peak per session, with 1σ errors, fit window,
+                                                  RMSE/R², saved_at; tagged experiment + fit_number
       <processed_pl_dir>/<sweep>/plots/fits_<n>/<stem>_fit.png
                                                   fit overlay; <n> counts up per session
-      <processed_pl_dir>/<sweep>/<stem>.nc        raw / baseline / subtracted data
-                                                  (+ fit settings and results in attrs)
 
     --sync-obsidian: when the fitter window closes, every fitted spectrum in the
     sweep folder(s) gets a note <vault_dir>/<Project>/<sweep> PL/Dataset <N>.md

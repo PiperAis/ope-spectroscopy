@@ -6,7 +6,8 @@ Key components:
 - PLFitter: interactive matplotlib fitter — click to place peaks, choose
   Gaussian or Lorentzian lineshape, optionally share (or lock) one width
   across chosen peaks and/or fit chosen peaks as an evenly spaced ladder,
-  save results to CSV + PNG
+  save each fit as a session of the spectrum's processed .nc (+ PNG), with
+  fit_results.csv regenerated from the .nc files
 - load_fit_results / plot_peak_param: load fit_results.csv and plot any
   parameter pair across datasets (energy vs field, width vs temperature, etc.)
 - track_peak: follow one fitted peak through a field sweep
@@ -16,6 +17,7 @@ builds on load_pl_data and _EnergyRangeControl from here.
 """
 
 import warnings
+from datetime import datetime
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -37,24 +39,44 @@ xr.set_options(keep_attrs=True)
 _METADATA_KEYS = ('sample', 'spot', 'field', 'temperature')
 
 
-def load_pl_data(filepath: Path, variable: str = 'raw') -> xr.DataArray:
+def load_pl_data(filepath: Path, variable: str = 'raw',
+                 fit_number: int | None = None) -> xr.DataArray:
     """
     Loads one PL spectrum into an xarray DataArray (energy coords, ascending).
 
     CSV (raw data): columns Wavelength, Intensity; wavelength converted to eV.
     Only variable='raw' is available from a CSV.
 
-    .nc (processed, written by PLFitter on Save): a Dataset with variables
-    'raw', 'baseline', 'subtracted'; `variable` picks one, and the Dataset's
-    attrs (metadata + fit settings) are carried onto the returned array.
-    A single-variable .nc (older format) is returned for variable='raw'.
+    .nc (processed, written by PLFitter on Save): holds 'raw' plus, per fit
+    session, 'baseline' and 'subtracted' (see the processed-spectrum section
+    below). `variable` picks one; for 'baseline' / 'subtracted' the session
+    is fit_number, or the highest stored if None. The Dataset's attrs
+    (metadata) and that session's fit settings and per-peak results are
+    carried onto the returned array as attrs.
+    An old one-fit .nc (fit settings in attrs) and a single-variable .nc
+    (returned for variable='raw') are still read; fit_number is ignored.
     Metadata found in the filename or the folder's metadata.txt replaces the
     stored value (with a warning if they differ).
     """
     filepath = Path(filepath)
     if filepath.suffix == '.nc':
         ds = xr.load_dataset(filepath)
-        if variable in ds.data_vars:
+        if 'fit_number' in ds.dims:
+            n = _pick_session(ds, fit_number)
+            if n is None:
+                raise KeyError(f"{filepath.name} has no fit session {fit_number} "
+                               f"(has: {[int(v) for v in ds['fit_number'].values]})")
+            if variable not in ds.data_vars:
+                raise KeyError(f"{filepath.name} has no '{variable}' variable")
+            array = ds[variable]
+            if 'fit_number' in array.dims:
+                array = array.sel(fit_number=n, drop=True)
+                if array.isnull().all():
+                    raise KeyError(f"{filepath.name}: fit session {n} has no stored "
+                                   f"'{variable}' (migrated from fit_results.csv; "
+                                   f"refit and save it)")
+            array = array.assign_attrs({**ds.attrs, **_session_attrs(ds, n)})
+        elif variable in ds.data_vars:
             array = ds[variable]
         elif variable == 'raw' and len(ds.data_vars) == 1:
             array = ds[next(iter(ds.data_vars))]
@@ -485,38 +507,6 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
             **ff.fit_quality(result.fun, y, len(p0))}
 
 
-def _row_keys(frame: pd.DataFrame, keys: list[str]) -> pd.MultiIndex:
-    """Comparable row keys. A CSV round trip can change a value's type (1 → 1.0
-    when the column has blanks; folder name '20261105' → int), so numeric-looking
-    values are compared as numbers and everything else as strings."""
-    cols = {}
-    for k in keys:
-        num = pd.to_numeric(frame[k], errors='coerce').astype(float)
-        cols[k] = num.astype(str).where(num.notna(), frame[k].astype(str))
-    return pd.MultiIndex.from_frame(pd.DataFrame(cols))
-
-
-def _upsert_rows_csv(csv_path: Path, df: pd.DataFrame, keys: list[str]):
-    """
-    Write rows to a CSV, replacing any existing rows whose `keys` values match
-    a row in df (e.g. a re-saved fit). Other rows are kept. If the existing file
-    has different columns (an older schema), they are merged by name: df's
-    columns first, extras after, and columns missing on either side become blank.
-    """
-    if not csv_path.exists():
-        df.to_csv(csv_path, index=False)
-        return
-    existing = pd.read_csv(csv_path)
-    if list(existing.columns) != list(df.columns):
-        print(f"Note: {csv_path.name} had an older column layout; merged and rewrote it "
-              f"(older rows have blank values in new columns).")
-    if all(k in existing.columns for k in keys):
-        existing = existing[~_row_keys(existing, keys).isin(_row_keys(df, keys))]
-    merged = pd.concat([existing, df], ignore_index=True)
-    merged = merged[list(df.columns) + [c for c in merged.columns if c not in df.columns]]
-    merged.to_csv(csv_path, index=False)
-
-
 _PEAK_KEYS = ('energy', 'energy_err', 'width', 'width_err',
               'amplitude', 'amplitude_err', 'area', 'area_err')
 
@@ -538,30 +528,143 @@ def _copy_folder_metadata(raw_folder: Path, processed_folder: Path):
     utilities._read_folder_metadata.cache_clear()
 
 
-def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, lineshape: str,
-                             experiment: str, fit_number: int):
-    """
-    Write one fitted spectrum as a processed .nc (the PL analog of a TRR dataset
-    file): variables 'raw', 'baseline' (fitted baseline evaluated over the full
-    energy range) and 'subtracted' (raw − baseline). Metadata, fit settings and
-    per-peak results go in the Dataset attrs. Overwrites, so a refit replaces it.
+# ---------------------------------------------------------------------------
+# Processed spectrum (.nc): every fit session of one spectrum
+# ---------------------------------------------------------------------------
+#
+# <processed_pl_dir>/<experiment>/<stem>.nc holds the spectrum and every saved
+# fit of it, one per fit session (fit_number):
+#   raw(energy)                          the spectrum
+#   baseline, subtracted(fit_number, energy)
+#   per-session settings / quality (fit_number): _SESSION_FLOATS,
+#       _SESSION_STRINGS, shared_width_locked, n_peaks
+#   per-peak results (fit_number, peak): peak_<_PEAK_KEYS>, peak_width_shared,
+#       peak_energy_spaced; padded past n_peaks (NaN / 0)
+#   attrs: filename + _METADATA_KEYS + experiment
+# Sessions migrated from fit_results.csv alone have no baseline: its
+# coefficients and the baseline/subtracted rows are NaN. fit_number 0 holds
+# fits saved before sessions were numbered. fit_results.csv is regenerated
+# from these files (_write_fit_results) and is never the source of truth.
 
-    Outside [fit_emin, fit_emax] the baseline is extrapolated from the fit window.
+_SESSION_FLOATS = ('baseline_c0', 'baseline_c1', 'baseline_xc', 'fit_emin', 'fit_emax',
+                   'rmse', 'r_squared', 'n_points', 'dof', 'spacing', 'spacing_err')
+_SESSION_STRINGS = ('lineshape', 'baseline_type', 'saved_at')   # saved_at '' if unknown
+_PEAK_FLAGS = ('peak_width_shared', 'peak_energy_spaced')
+
+
+def _session_dataset(fit_number: int, raw: xr.DataArray, settings: dict, peaks: dict,
+                     baseline: np.ndarray | None) -> xr.Dataset:
     """
-    bl = result['baseline']
-    metadata = {k: raw.attrs.get(k) for k in ('filename', *_METADATA_KEYS)}
+    One fit session of one spectrum, as a length-1 fit_number slice of the
+    processed .nc layout (without 'raw').
+
+    settings: _SESSION_FLOATS / _SESSION_STRINGS keys (missing → NaN / '') and
+    'shared_width_locked'. peaks: _PEAK_KEYS lists plus 'width_shared' and
+    'energy_spaced' (bool lists), all in peak order. baseline: evaluated on
+    raw.energy, or None if not known (migrated from fit_results.csv).
+    """
+    n_peaks = len(peaks['energy'])
+    if baseline is None:
+        baseline = np.full(raw.sizes['energy'], np.nan)
+    one = {'fit_number': [int(fit_number)]}
+    data_vars = {
+        'baseline':   (('fit_number', 'energy'), baseline[None, :]),
+        'subtracted': (('fit_number', 'energy'), (raw.values - baseline)[None, :]),
+        'n_peaks':    ('fit_number', [n_peaks]),
+        'shared_width_locked': ('fit_number', np.array([int(settings.get('shared_width_locked', 0))],
+                                                       dtype=np.int8)),
+    }
+    for key in _SESSION_FLOATS:
+        value = settings.get(key)
+        data_vars[key] = ('fit_number', [np.nan if value is None else float(value)])
+    for key in _SESSION_STRINGS:
+        data_vars[key] = ('fit_number', np.array([str(settings.get(key) or '')], dtype=object))
+    for key in _PEAK_KEYS:
+        data_vars[f'peak_{key}'] = (('fit_number', 'peak'),
+                                    np.asarray(peaks[key], dtype=float)[None, :])
+    for var, key in zip(_PEAK_FLAGS, ('width_shared', 'energy_spaced')):
+        data_vars[var] = (('fit_number', 'peak'),
+                          np.asarray(peaks[key], dtype=np.int8)[None, :])
+    return xr.Dataset(data_vars, coords={**one, 'energy': raw.energy.values,
+                                         'peak': np.arange(n_peaks)})
+
+
+def _put_session(existing: xr.Dataset | None, raw: xr.DataArray,
+                 session: xr.Dataset) -> xr.Dataset:
+    """
+    Add one session (from _session_dataset) to a spectrum's sessions, replacing
+    a stored session with the same fit_number. Returns the full processed
+    Dataset (raw + all sessions, sorted by fit_number), without attrs.
+    """
     raw = raw.copy()
     raw.attrs = {}
-    baseline = xr.DataArray(_eval_baseline(bl, raw.energy.values),
-                            coords={'energy': raw.energy}, name='baseline')
-    ds = xr.Dataset({'raw': raw, 'baseline': baseline, 'subtracted': raw - baseline})
+    raw.name = 'raw'
+    parts = [session]
+    if existing is not None:
+        if not np.array_equal(existing['energy'].values, raw['energy'].values):
+            raise ValueError("Stored energy axis differs from this spectrum's; "
+                             "not merging fit sessions onto a different spectrum.")
+        others = existing.drop_vars('raw').drop_sel(fit_number=session['fit_number'].values,
+                                                     errors='ignore')
+        if others.sizes['fit_number']:
+            parts.insert(0, others)
+    # Strings load as fixed width (<U8); as object they don't truncate longer new values.
+    parts = [p.assign({k: p[k].astype(object) for k in _SESSION_STRINGS}) for p in parts]
+    sessions = xr.concat(parts, dim='fit_number', join='outer', data_vars='all',
+                         coords='minimal', compat='override')
+    for var in _PEAK_FLAGS:   # padding made these float; restore 0/1 ints
+        sessions[var] = sessions[var].fillna(0).astype(np.int8)
+    sessions = sessions.isel(peak=slice(0, int(sessions['n_peaks'].max())))
+    sessions = sessions.sortby('fit_number')
+    ds = xr.merge([xr.Dataset({'raw': raw}), sessions], join='exact')
+    ds.attrs = {}
+    return ds
 
-    attrs = {k: v for k, v in metadata.items() if v is not None}
-    attrs.update({
-        'experiment':    experiment,
-        'fit_number':    int(fit_number),   # matches plots/fits_<n>/ and the CSV
-        'rmse':          float(result['rmse']),
-        'r_squared':     float(result['r_squared']),
+
+def _load_sessions(path: Path) -> xr.Dataset:
+    """Load a processed .nc in the session layout (fully, so it can be overwritten)."""
+    ds = xr.load_dataset(path)
+    if 'fit_number' not in ds.dims:
+        raise ValueError(f"{path} uses the old one-fit layout. Convert it first: "
+                         f"python scripts/migrate_pl_sessions.py --project <project>")
+    return ds
+
+
+def _pick_session(ds: xr.Dataset, fit_number: int | None) -> int | None:
+    """The session to read: fit_number if stored (else None), or the highest stored."""
+    stored = [int(n) for n in ds['fit_number'].values]
+    if fit_number is None:
+        return max(stored)
+    return int(fit_number) if int(fit_number) in stored else None
+
+
+def _session_attrs(ds: xr.Dataset, fit_number: int) -> dict:
+    """One session's fit settings and per-peak results as flat attrs (the
+    attrs a processed spectrum has always carried on load)."""
+    s = ds.sel(fit_number=fit_number)
+    k = int(s['n_peaks'])
+    attrs = {'fit_number': int(fit_number)}
+    for key in ('rmse', 'r_squared'):
+        attrs[key] = float(s[key])
+    attrs['lineshape'] = str(s['lineshape'].values)
+    attrs['baseline_type'] = str(s['baseline_type'].values)
+    for key in ('baseline_c0', 'baseline_c1', 'baseline_xc', 'fit_emin', 'fit_emax'):
+        attrs[key] = float(s[key])
+    for key in _PEAK_KEYS:
+        attrs[f'peak_{key}'] = s[f'peak_{key}'].values[:k].astype(float)
+    attrs['peak_width_shared'] = s['peak_width_shared'].values[:k].astype(np.int8)
+    attrs['shared_width_locked'] = int(s['shared_width_locked'])
+    attrs['peak_energy_spaced'] = s['peak_energy_spaced'].values[:k].astype(np.int8)
+    if not np.isnan(float(s['spacing'])):
+        attrs['spacing'] = float(s['spacing'])
+        attrs['spacing_err'] = float(s['spacing_err'])
+    return attrs
+
+
+def _result_session(result: dict, lineshape: str, saved_at: str) -> tuple[dict, dict]:
+    """(settings, peaks) for _session_dataset from a _fit_spectrum result."""
+    bl = result['baseline']
+    settings = {
         'lineshape':     lineshape,
         'baseline_type': bl['type'],
         'baseline_c0':   bl['c0'],
@@ -569,57 +672,122 @@ def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, linesh
         'baseline_xc':   bl['xc'],
         'fit_emin':      float(np.min(result['x_fit'])),
         'fit_emax':      float(np.max(result['x_fit'])),
-    })
-    for key in _PEAK_KEYS:   # one entry per peak, in peak order
-        attrs[f'peak_{key}'] = np.array([p[key] for p in result['peaks']], dtype=float)
-    # Shared-width constraint (netCDF has no bool attrs): 1 = in the shared group.
-    attrs['peak_width_shared'] = np.array([int(p['shared']) for p in result['peaks']], dtype=np.int8)
-    attrs['shared_width_locked'] = int(result['width_locked'])
-    attrs['peak_energy_spaced'] = np.array([int(p['spaced']) for p in result['peaks']], dtype=np.int8)
-    if result['spacing'] is not None:
-        attrs['spacing'] = float(result['spacing'])
-        attrs['spacing_err'] = float(result['spacing_err'])
-    ds.attrs = attrs   # netCDF can't store None attrs; those were dropped above
+        'rmse':          result['rmse'],
+        'r_squared':     result['r_squared'],
+        'n_points':      result['n_points'],
+        'dof':           result['dof'],
+        'spacing':       result['spacing'],
+        'spacing_err':   result['spacing_err'],
+        'shared_width_locked': int(result['width_locked']),
+        'saved_at':      saved_at,
+    }
+    peaks = {key: [p[key] for p in result['peaks']] for key in _PEAK_KEYS}
+    peaks['width_shared'] = [p['shared'] for p in result['peaks']]
+    peaks['energy_spaced'] = [p['spaced'] for p in result['peaks']]
+    return settings, peaks
 
+
+def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, lineshape: str,
+                             experiment: str, fit_number: int, saved_at: str):
+    """
+    Store one fitted spectrum as session fit_number of its processed .nc (the
+    PL analog of a TRR dataset file), replacing that session if it is already
+    stored and keeping the others. The baseline is evaluated over the full
+    energy range (outside [fit_emin, fit_emax] it is extrapolated from the fit
+    window). Metadata attrs are refreshed from raw.
+    """
+    settings, peaks = _result_session(result, lineshape, saved_at)
+    baseline = _eval_baseline(result['baseline'], raw.energy.values)
+    session = _session_dataset(fit_number, raw, settings, peaks, baseline)
+    existing = _load_sessions(path) if path.exists() else None
+    ds = _put_session(existing, raw, session)
+    metadata = {k: raw.attrs.get(k) for k in ('filename', *_METADATA_KEYS)}
+    ds.attrs = {**{k: v for k, v in metadata.items() if v is not None},   # no None in netCDF
+                'experiment': experiment}
     path.parent.mkdir(parents=True, exist_ok=True)
     ds.to_netcdf(path, mode='w')
 
 
-def _fit_rows(filename: str, data: xr.DataArray, result: dict,
-              experiment: str, fit_number: int) -> list[dict]:
-    """fit_results.csv rows for one saved fit: one row per peak, with the
-    spectrum's metadata, fit settings and fit quality repeated on each."""
+# fit_results.csv columns, in order.
+_CSV_COLUMNS = ['filename', 'experiment', 'fit_number', *_METADATA_KEYS, 'lineshape', 'baseline',
+                'fit_emin', 'fit_emax', 'peak_index', 'energy', 'energy_err', 'width', 'width_err',
+                'width_shared', 'width_locked', 'energy_spaced', 'spacing', 'spacing_err',
+                'amplitude', 'amplitude_err', 'area', 'area_err', 'n_points', 'dof', 'rmse',
+                'r_squared', 'saved_at']
+
+
+def _session_rows(ds: xr.Dataset, experiment: str) -> list[dict]:
+    """fit_results.csv rows for every session in a processed .nc: one row per
+    peak, with the spectrum's metadata, fit settings and fit quality repeated."""
+    def num(value, cast=float):
+        value = float(value)
+        return None if np.isnan(value) else cast(value)
+
+    v = {name: ds[name].values for name in ds.data_vars if 'energy' not in ds[name].dims}
     rows = []
-    for j, peak in enumerate(result['peaks']):
-        rows.append({
-            'filename':    filename,
-            'experiment':  experiment,
-            'fit_number':  fit_number,
-            **{k: data.attrs.get(k) for k in _METADATA_KEYS},
-            'lineshape':   result['lineshape'],
-            'baseline':    result['baseline']['type'],
-            'fit_emin':    float(np.min(result['x_fit'])),
-            'fit_emax':    float(np.max(result['x_fit'])),
-            'peak_index':  j,
-            'energy':        peak['energy'],
-            'energy_err':    peak['energy_err'],
-            'width':         peak['width'],
-            'width_err':     peak['width_err'],
-            'width_shared':  peak['shared'],
-            'width_locked':  peak['shared'] and result['width_locked'],
-            'energy_spaced': peak['spaced'],
-            'spacing':       result['spacing'] if peak['spaced'] else None,
-            'spacing_err':   result['spacing_err'] if peak['spaced'] else None,
-            'amplitude':     peak['amplitude'],
-            'amplitude_err': peak['amplitude_err'],
-            'area':          peak['area'],
-            'area_err':      peak['area_err'],
-            'n_points':    result['n_points'],
-            'dof':         result['dof'],
-            'rmse':        result['rmse'],
-            'r_squared':   result['r_squared'],
-        })
+    for i, n in enumerate(ds['fit_number'].values):
+        locked = bool(v['shared_width_locked'][i])
+        for j in range(int(v['n_peaks'][i])):
+            shared = bool(v['peak_width_shared'][i, j])
+            spaced = bool(v['peak_energy_spaced'][i, j])
+            peak = {key: num(v[f'peak_{key}'][i, j]) for key in _PEAK_KEYS}
+            rows.append({
+                'filename':   ds.attrs.get('filename'),
+                'experiment': experiment,
+                'fit_number': int(n),
+                **{k: ds.attrs.get(k) for k in _METADATA_KEYS},
+                'lineshape':  str(v['lineshape'][i]),
+                'baseline':   str(v['baseline_type'][i]),
+                'fit_emin':   num(v['fit_emin'][i]),
+                'fit_emax':   num(v['fit_emax'][i]),
+                'peak_index': j,
+                **{key: peak[key] for key in ('energy', 'energy_err', 'width', 'width_err')},
+                'width_shared':  shared,
+                'width_locked':  shared and locked,
+                'energy_spaced': spaced,
+                'spacing':       num(v['spacing'][i]) if spaced else None,
+                'spacing_err':   num(v['spacing_err'][i]) if spaced else None,
+                **{key: peak[key] for key in ('amplitude', 'amplitude_err', 'area', 'area_err')},
+                'n_points':  num(v['n_points'][i], int),
+                'dof':       num(v['dof'][i], int),
+                'rmse':      num(v['rmse'][i]),
+                'r_squared': num(v['r_squared'][i]),
+                'saved_at':  str(v['saved_at'][i]),
+            })
     return rows
+
+
+def _fit_results_frame(output_dir: Path) -> pd.DataFrame:
+    """Every session of every processed .nc under output_dir/<experiment>/, as
+    fit_results.csv rows sorted by experiment, fit_number, filename, peak.
+    Files still in the old one-fit layout are skipped with a warning."""
+    rows = []
+    for nc in sorted(Path(output_dir).glob('*/*.nc')):
+        with xr.open_dataset(nc) as ds:
+            if 'fit_number' not in ds.dims:
+                warnings.warn(f"{nc} uses the old one-fit layout; not in fit_results.csv "
+                              f"(run scripts/migrate_pl_sessions.py).")
+                continue
+            rows.extend(_session_rows(ds.load(), ds.attrs.get('experiment', nc.parent.name)))
+    frame = pd.DataFrame(rows, columns=_CSV_COLUMNS)
+    return frame.sort_values(['experiment', 'fit_number', 'filename', 'peak_index'],
+                             kind='stable').reset_index(drop=True)
+
+
+def _write_fit_results(output_dir: Path) -> Path:
+    """
+    Regenerate <output_dir>/fit_results.csv from the processed .nc files.
+    A CSV from before this layout (no saved_at column) is first copied to
+    fit_results_pre_migration.csv, since its rows may not all be in a .nc.
+    """
+    csv_path = Path(output_dir) / 'fit_results.csv'
+    backup = csv_path.with_name('fit_results_pre_migration.csv')
+    if csv_path.exists() and not backup.exists() \
+            and 'saved_at' not in pd.read_csv(csv_path, nrows=0).columns:
+        backup.write_bytes(csv_path.read_bytes())
+        print(f"Kept the old {csv_path.name} as {backup.name}")
+    _fit_results_frame(output_dir).to_csv(csv_path, index=False)
+    return csv_path
 
 
 def _save_fit_plot(path: Path, result: dict, title: str):
@@ -680,10 +848,13 @@ class PLFitter:
         fitter = PLFitter(sweep_folder_or_file_list, output_dir=Path(cfg['processed_pl_dir']))
         fitter.run()
 
-    Results go to <output_dir>/fit_results.csv: one row per peak, tagged with
-    experiment and fit_number (= <n> below), plus the fit window and fit
-    quality (rmse, r_squared). Re-saving a spectrum in the same session
-    replaces its rows; earlier sessions' rows are kept.
+    Save stores the fit as session fit_number (= <n> below) of the spectrum's
+    processed <output_dir>/<experiment>/<stem>.nc, which keeps every session's
+    fit (baseline, subtracted data, settings, per-peak results, saved_at).
+    Re-saving a spectrum in the same session replaces that session's fit;
+    earlier sessions are kept. <output_dir>/fit_results.csv (one row per peak
+    per session, with the fit window and fit quality) is then regenerated
+    from the .nc files.
     Fit-overlay plots are saved to
     <output_dir>/<experiment>/plots/fits_<n>/<filename>_fit.png, where
     <experiment> is the spectrum's sweep folder name and <n> counts up once
@@ -1059,25 +1230,21 @@ class PLFitter:
         experiment = filepath.parent.name
         fit_number = self._fit_number(experiment)
 
-        # One row set per (spectrum, fit session): re-saving in this session replaces it.
-        rows = _fit_rows(filepath.name, self.data, result, experiment, fit_number)
-        csv_path = self.output_dir / 'fit_results.csv'
-        _upsert_rows_csv(csv_path, pd.DataFrame(rows),
-                         keys=['experiment', 'filename', 'fit_number'])
-        print(f"Saved {len(rows)} peak(s) as fit {fit_number} → {csv_path}")
+        # The processed .nc holds every session's fit of this spectrum (re-saving in
+        # this session replaces its entry); fit_results.csv is regenerated from them.
+        nc_path = self.output_dir / experiment / f"{filepath.stem}.nc"
+        saved_at = datetime.now().isoformat(timespec='seconds')
+        _save_processed_spectrum(nc_path, self.data, result, result['lineshape'],
+                                 experiment, fit_number, saved_at)
+        print(f"Saved {len(result['peaks'])} peak(s) as fit {fit_number} → {nc_path}")
+        _copy_folder_metadata(filepath.parent, nc_path.parent)
+        csv_path = _write_fit_results(self.output_dir)
+        print(f"Updated {csv_path}")
 
         plot_path = self._fits_dir(experiment) / (filepath.stem + '_fit.png')
         _save_fit_plot(plot_path, result, title=f"{filepath.name} fit "
                                                 f"({result['baseline']['type']} baseline)")
         print(f"Plot → {plot_path}")
-
-        # Processed spectrum (raw / baseline / subtracted) for the contour builder,
-        # one .nc per spectrum under <output_dir>/<sweep folder>/, like TRR's per-set .nc.
-        nc_path = self.output_dir / experiment / f"{filepath.stem}.nc"
-        _save_processed_spectrum(nc_path, self.data, result,
-                                 result['lineshape'], experiment, fit_number)
-        print(f"Spectrum → {nc_path}")
-        _copy_folder_metadata(filepath.parent, nc_path.parent)
 
         self._saved = True
         self._update_title()
