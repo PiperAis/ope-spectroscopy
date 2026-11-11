@@ -34,7 +34,8 @@ from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from matplotlib.colorbar import Colorbar
 from . import utilities
-from .steady_state import load_pl_data, _spectrum_paths, _EnergyRangeControl, _CycleButton
+from .steady_state import (load_pl_data, _spectrum_paths, _EnergyRangeControl, _CycleButton,
+                           _METADATA_KEYS)
 
 xr.set_options(keep_attrs=True)
 
@@ -72,24 +73,49 @@ def _load_sweep_map(files: Path | list[Path], variable: str = 'raw',
     metadata.txt). Sorted by sweep value (not acquisition order), since
     B-field sweeps commonly ramp up then back down through zero.
 
-    The sweep attr becomes the coordinate; other metadata attrs (e.g.
-    temperature in a field sweep) are taken from the first spectrum.
+    The sweep attr becomes the coordinate. The other metadata attrs must
+    agree across the spectra (missing/None values don't count as differing):
+    - physical parameters (the other SWEEPS variable, e.g. temperature in a
+      field sweep): ValueError, since a folder mixing them is not one sweep
+      (pass an explicit file list to load a consistent subset);
+    - labels (sample, spot): warning, and the label is dropped from the map's
+      attrs rather than taking the first spectrum's value.
     For processed spectra, attrs fit_emin/fit_emax on the map are the
     intersection of the individual fit windows.
     """
     info = _check_sweep(sweep)
     spectra, windows = [], []
+    others = [k for k in _METADATA_KEYS if k != sweep]
+    seen = {k: {} for k in others}   # attr → {value: first filename with it}
     for filepath in _spectrum_paths(files):
         da = load_pl_data(filepath, variable=variable)
         value = da.attrs[sweep]
         if value is None:
             warnings.warn(f"Could not parse {info['long_name'].lower()} from filename or "
                           f"{utilities.METADATA_FILENAME}: {filepath.name}")
+        for k in others:
+            if da.attrs.get(k) is not None:
+                seen[k].setdefault(da.attrs[k], filepath.name)
         if 'fit_emin' in da.attrs:
             windows.append((da.attrs['fit_emin'], da.attrs['fit_emax']))
         spectra.append(da.expand_dims({sweep: [value]}))
 
+    def describe(mixed):
+        return '; '.join(f"{k}: " + ', '.join(f"{val!r} (e.g. {name})" for val, name in v.items())
+                         for k, v in mixed.items())
+    mixed = {k: v for k, v in seen.items() if len(v) > 1}
+    physical = {k: v for k, v in mixed.items() if k in SWEEPS}
+    labels = {k: v for k, v in mixed.items() if k not in SWEEPS}
+    if physical:
+        raise ValueError(f"Spectra in this {sweep} sweep differ in {describe(physical)}. "
+                         f"Pass an explicit file list to load a consistent subset.")
+    if labels:
+        warnings.warn(f"Spectra in this {sweep} sweep have inconsistent labels — "
+                      f"{describe(labels)}. Dropping {', '.join(labels)} from the map.")
+
     sweep_map = xr.concat(spectra, dim=sweep).sortby(sweep)
+    for k in labels:
+        sweep_map.attrs.pop(k, None)
     # Drop per-spectrum attrs (now a coordinate, or specific to one fit).
     for key in list(sweep_map.attrs):
         if key in (sweep, 'filename', 'lineshape', 'fit_emin', 'fit_emax',
