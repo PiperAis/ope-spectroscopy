@@ -621,6 +621,16 @@ def _put_session(existing: xr.Dataset | None, raw: xr.DataArray,
     return ds
 
 
+def _experiment_sessions(experiment_dir: Path) -> set[int]:
+    """Fit numbers stored in any processed .nc of one experiment folder."""
+    sessions = set()
+    for nc in Path(experiment_dir).glob('*.nc'):
+        with xr.open_dataset(nc) as ds:
+            if 'fit_number' in ds.dims:
+                sessions.update(int(n) for n in ds['fit_number'].values)
+    return sessions
+
+
 def _load_sessions(path: Path) -> xr.Dataset:
     """Load a processed .nc in the session layout (fully, so it can be overwritten)."""
     ds = xr.load_dataset(path)
@@ -659,6 +669,44 @@ def _session_attrs(ds: xr.Dataset, fit_number: int) -> dict:
         attrs['spacing'] = float(s['spacing'])
         attrs['spacing_err'] = float(s['spacing_err'])
     return attrs
+
+
+def _stored_fit(data: xr.DataArray, ds: xr.Dataset, fit_number: int) -> dict | None:
+    """
+    Rebuild session fit_number of a processed .nc as a _fit_spectrum-style
+    result (plus 'lineshape'), from the stored parameters with no refit: the
+    curves are evaluated on data's points in the stored fit window. None if
+    the session has no stored baseline (migrated from fit_results.csv).
+    """
+    a = _session_attrs(ds, fit_number)
+    if np.isnan(a['baseline_c0']):
+        return None
+    s = ds.sel(fit_number=fit_number)
+    bl = {'type': a['baseline_type'], 'c0': a['baseline_c0'],
+          'c1': a['baseline_c1'], 'xc': a['baseline_xc']}
+    mask = (data.energy >= a['fit_emin']) & (data.energy <= a['fit_emax'])
+    da = data.where(mask, drop=True)
+    x = da.energy.values.astype(float)
+    fn = ff.LINESHAPES[a['lineshape']]
+    params = np.column_stack([a['peak_amplitude'], a['peak_energy'], a['peak_width']]).ravel()
+    peaks = []
+    for j in range(len(a['peak_energy'])):
+        peak = {key: float(a[f'peak_{key}'][j]) for key in _PEAK_KEYS}
+        peak['y'] = fn(params[3*j:3*(j+1)], x)
+        peak['shared'] = bool(a['peak_width_shared'][j])
+        peak['spaced'] = bool(a['peak_energy_spaced'][j])
+        peaks.append(peak)
+
+    def count(key):
+        value = float(s[key])
+        return None if np.isnan(value) else int(value)
+
+    return {'peaks': peaks, 'x_fit': x, 'y_total': fn(params, x),
+            'y_data': da.values.astype(float) - _eval_baseline(bl, x), 'baseline': bl,
+            'width_locked': bool(a['shared_width_locked']),
+            'spacing': a.get('spacing'), 'spacing_err': a.get('spacing_err'),
+            'n_points': count('n_points'), 'dof': count('dof'),
+            'rmse': a['rmse'], 'r_squared': a['r_squared'], 'lineshape': a['lineshape']}
 
 
 def _result_session(result: dict, lineshape: str, saved_at: str) -> tuple[dict, dict]:
@@ -859,13 +907,32 @@ class PLFitter:
     <output_dir>/<experiment>/plots/fits_<n>/<filename>_fit.png, where
     <experiment> is the spectrum's sweep folder name and <n> counts up once
     per fitting session, so earlier iterations are never overwritten.
+
+    Editing a session: PLFitter(files, output_dir, edit_session=n) saves into
+    the existing session n instead of starting a new one, replacing a
+    spectrum's fit there and overwriting its fits_<n>/ plot. Each spectrum
+    with a fit in session n opens with that fit drawn exactly as stored (no
+    refit), with its markers, fit window and baseline type, and its shared
+    FWHM in the box (Lock is left as set); Fit refits from there. Spectra not in session n open as usual and can be added to it.
+    A session migrated from fit_results.csv alone has no stored baseline, so
+    its spectra open with markers, window and baseline type only (refit to
+    save). Every experiment in files must already have a session n.
     """
 
-    def __init__(self, files: Path | list[Path], output_dir: Path):
+    def __init__(self, files: Path | list[Path], output_dir: Path,
+                 edit_session: int | None = None):
         self.files = _spectrum_paths(files)   # a folder (its .csv/.nc) or a list
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._fit_numbers: dict[str, int] = {}  # experiment name → this session's n (fits_<n>/)
+        self.edit_session = edit_session
+        if edit_session is not None:
+            for experiment in sorted({f.parent.name for f in self.files}):
+                stored = _experiment_sessions(self.output_dir / experiment)
+                if edit_session not in stored:
+                    raise ValueError(f"{experiment} has no fit session {edit_session} to edit "
+                                     f"(has: {sorted(stored) or 'none'})")
+                self._fit_numbers[experiment] = int(edit_session)
 
         self.current_idx = 0
         self.data: xr.DataArray   # current spectrum; set in _load_current()
@@ -954,8 +1021,8 @@ class PLFitter:
     def _load_current(self, seed_peaks: list[tuple[float, bool, bool]] | None = None,
                       state: dict | None = None):
         """Load files[current_idx]. `state` (a snapshot from _stash_state) restores a
-        previously visited file; otherwise `seed_peaks` (carried (x, shared, spaced)
-        peaks) are placed."""
+        previously visited file; when editing a session, a first visit restores the
+        stored fit. Otherwise `seed_peaks` (carried (x, shared, spaced) peaks) are placed."""
         self.peak_markers.clear()
         self.fit_lines.clear()
         self.fit_result = None
@@ -963,6 +1030,12 @@ class PLFitter:
 
         filepath = self.files[self.current_idx]
         self.data = load_pl_data(filepath)
+        if state is None and self.edit_session is not None:
+            # First visit while editing: the spectrum's fit in that session, if any.
+            state = self._stored_state(filepath)
+            if state is not None and state['shared_width_mev'] is not None:
+                # Show the stored shared FWHM; Lock is left as the user set it.
+                self.tb_sw.set_val(f"{state['shared_width_mev']:.4g}")
 
         # First file: full data range. Later files: keep the previous range,
         # clamped in case this file covers less energy.
@@ -999,13 +1072,37 @@ class PLFitter:
             status = ''
         else:
             status = '   ✓ saved' if self._saved else '   (fit not saved)'
+        editing = '' if self.edit_session is None else f'   [editing session {self.edit_session}]'
         self.ax.set_title(
-            f'[{n}/{total}]  {filepath.name}{status}\n'
+            f'[{n}/{total}]  {filepath.name}{status}{editing}\n'
             f'{sample}  {spot}  —  '
             'left-click: place  |  right-click: remove  |  shift-click: shared width  |  '
             'ctrl-click: equal spacing',
             fontsize=9
         )
+
+    def _stored_state(self, filepath: Path) -> dict | None:
+        """A _stash_state-style snapshot of this spectrum's fit in the session
+        being edited, from its processed .nc; None if it isn't in that session."""
+        n = self.edit_session
+        nc = self.output_dir / filepath.parent.name / f"{filepath.stem}.nc"
+        if not nc.exists():
+            return None
+        with xr.open_dataset(nc) as ds:
+            if 'fit_number' not in ds.dims or n not in ds['fit_number'].values:
+                return None
+            ds = ds.load()
+        a = _session_attrs(ds, n)
+        result = _stored_fit(self.data, ds, n)
+        if result is None:
+            print(f"{filepath.name}: session {n} has no stored baseline (migrated from "
+                  f"fit_results.csv); markers restored, refit to save.")
+        markers = [(float(e), bool(sh), bool(sp)) for e, sh, sp in
+                   zip(a['peak_energy'], a['peak_width_shared'], a['peak_energy_spaced'])]
+        shared = [w for w, sh in zip(a['peak_width'], a['peak_width_shared']) if sh]
+        return {'markers': markers, 'fit_result': result, 'saved': result is not None,
+                'range': (a['fit_emin'], a['fit_emax']), 'baseline': a['baseline_type'],
+                'shared_width_mev': float(shared[0]) * 1e3 if shared else None}
 
     def _stash_state(self):
         """Snapshot the current file so Back / revisiting restores it."""
@@ -1264,7 +1361,9 @@ class PLFitter:
             n = max(taken, default=0) + 1
             (plots_dir / f"fits_{n}").mkdir()
             self._fit_numbers[experiment] = n
-        return plots_dir / f"fits_{self._fit_numbers[experiment]}"
+        fits_dir = plots_dir / f"fits_{self._fit_numbers[experiment]}"
+        fits_dir.mkdir(parents=True, exist_ok=True)   # an edited session's may be missing (fits_0)
+        return fits_dir
 
     def _fit_number(self, experiment: str) -> int:
         """This session's fit number n for experiment (allocated on first save)."""

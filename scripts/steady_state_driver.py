@@ -34,6 +34,16 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
       <processed_pl_dir>/<sweep>/plots/fits_<n>/<stem>_fit.png
                                                   fit overlay; <n> counts up per session
 
+EDIT A FIT SESSION — reopen session n and save into it instead of a new one:
+    python scripts/steady_state_driver.py --project MyExperiment --edit-session 3
+    python scripts/steady_state_driver.py --project MyExperiment --edit-session
+
+    Pick the sweep folder as usual. Without a number, the folder's sessions
+    are listed (spectra, last saved) and you're asked for one. Spectra fitted
+    in that session open with the saved fit drawn as stored (no refit);
+    others open blank and can be added. Save replaces the spectrum's fit in
+    that session and overwrites its fits_<n>/ plot.
+
     --sync-obsidian: when the fitter window closes, every fitted spectrum in the
     sweep folder(s) gets a note <vault_dir>/<Project>/<sweep> PL/Dataset <N>.md
     (project dashes → spaces, e.g. HS-2 → HS 2). Properties: sample/spot/field/
@@ -129,6 +139,30 @@ from opespec.obsidian_integration import sync_pl_sweep
 
 #%%
 # ---------------------------------------------------------------------------
+def ask_edit_session(cfg: dict, files) -> int:
+    """List the fit sessions of the chosen sweep folder(s) and ask which to edit."""
+    from pathlib import Path
+    paths = [Path(f) for f in (files if isinstance(files, list) else [files])]
+    experiments = sorted({p.name if p.is_dir() else p.parent.name for p in paths})
+    csv_path = Path(cfg['processed_pl_dir']) / 'fit_results.csv'
+    if not csv_path.exists():
+        raise SystemExit(f"No fit results yet: {csv_path}")
+    df = load_fit_results(csv_path)
+    df = df[df['experiment'].astype(str).isin(experiments)]
+    if df.empty:
+        raise SystemExit(f"No saved fit sessions for {', '.join(experiments)}.")
+    for experiment, rows in df.groupby(df['experiment'].astype(str)):
+        print(f"Fit sessions in {experiment}:")
+        for n, session in rows.groupby('fit_number'):
+            saved = session['saved_at'].dropna()
+            last = saved.max() if len(saved) else 'unknown'
+            print(f"  {int(n):>3}: {session['filename'].nunique()} spectra, last saved {last}")
+    try:
+        return int(input("Session to edit: "))
+    except ValueError:
+        raise SystemExit("Not a session number.")
+
+
 def sync_obsidian(cfg: dict, project: str, sweeps) -> None:
     """Write/update vault dataset notes for each named sweep folder."""
     from pathlib import Path
@@ -161,6 +195,10 @@ if __name__ == "__main__":
                              'compare, sync (Obsidian notes only, from saved fits).')
     parser.add_argument('--sweep', choices=['field', 'temperature'], default='field',
                         help="Contour-plot mode: the variable stepped across the sweep folder.")
+    parser.add_argument('--edit-session', nargs='?', type=int, const=-1, default=None,
+                        metavar='N',
+                        help="Fit mode: save into existing fit session N instead of a new one "
+                             "(its saved fits are restored). Without N, list sessions and ask.")
     parser.add_argument('--sync-obsidian', action='store_true',
                         help="Fit mode: after the window closes, write/update Obsidian dataset "
                              "notes for the fitted sweep folder(s).")
@@ -198,7 +236,10 @@ if __name__ == "__main__":
             files = select_directory(Path(cfg['pl_dir']))
             if not files:
                 raise SystemExit("No directory selected.")
-        fitter = PLFitter(files, output_dir=Path(cfg['processed_pl_dir']))
+        edit = args.edit_session
+        if edit == -1:
+            edit = ask_edit_session(cfg, files)
+        fitter = PLFitter(files, output_dir=Path(cfg['processed_pl_dir']), edit_session=edit)
         print(f"Opening fitter for {len(fitter.files)} file(s)...")
         fitter.run()
 
