@@ -380,13 +380,17 @@ def _constraint_map(p0: list, bounds: list, shared: list[bool], shared_width: fl
     return q0, qb, M, c, idx
 
 
+_DEFAULT_CENTER_BOUND = 0.008   # eV; a peak center may move ± this from its click
+
+
 def _fit_spectrum(data: xr.DataArray, peak_positions: list,
                   lineshape: str, energy_range: tuple,
                   baseline: str = 'constant',
                   shared: list[bool] | None = None,
                   shared_width: float | None = None,
                   spaced: list[bool] | None = None,
-                  fixed: list[bool] | None = None) -> dict | None:
+                  fixed: list[bool] | None = None,
+                  center_bounds: list[float | None] | None = None) -> dict | None:
     """
     Fit N peaks to the spectrum within energy_range using clicked peak positions
     as initial guesses. Returns a result dict or None on failure.
@@ -405,14 +409,19 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
             (eV; None without a group).
     fixed: per peak, True = hold its center at its peak_positions value
            (energy_err = 0). A fixed peak can't also be spaced.
+    center_bounds: per peak, the half-width (eV) its center may move from its
+           peak_positions value; None = the default (±_DEFAULT_CENTER_BOUND).
+           Ignored for fixed and spaced peaks. Echoed as each result peak's
+           'center_bound' (not saved).
     With a spacing group, peak_positions must be in increasing energy order.
     """
     npk = len(peak_positions)
     shared = list(shared) if shared is not None else [False] * npk
     spaced = list(spaced) if spaced is not None else [False] * npk
     fixed = list(fixed) if fixed is not None else [False] * npk
-    if len(shared) != npk or len(spaced) != npk or len(fixed) != npk:
-        raise ValueError("shared/spaced/fixed must have one entry per peak position")
+    center_bounds = list(center_bounds) if center_bounds is not None else [None] * npk
+    if any(len(v) != npk for v in (shared, spaced, fixed, center_bounds)):
+        raise ValueError("shared/spaced/fixed/center_bounds must have one entry per peak position")
     if any(spaced) and list(peak_positions) != sorted(peak_positions):
         raise ValueError("with a spacing group, peak_positions must be in increasing energy order")
     if sum(spaced) == 1:
@@ -441,7 +450,11 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
         inputamps.append(max(float(y[idx] - _eval_baseline(bl_guess, x[idx])), 1.0))
 
     inputwids = [0.01] * len(peak_positions)
-    pk0, pk_bounds = ff.generateParams_fixed(peak_positions, inputamps, inputwids)
+    pk0, pk_bounds = ff.generateParams_fixed(peak_positions, inputamps, inputwids,
+                                             boundsize=_DEFAULT_CENTER_BOUND)
+    for j, (pos, cb) in enumerate(zip(peak_positions, center_bounds)):
+        if cb is not None:
+            pk_bounds[3*j + 1] = [pos - cb, pos + cb]
     # Solver vector: free peak params (shared width once, or none if locked;
     # E0 and Δ for the spacing group), then baseline.
     q0, q_bounds, M, c, idx = _constraint_map(list(pk0), list(pk_bounds), shared,
@@ -483,10 +496,11 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
     err = np.sqrt(np.clip(np.diag(cov), 0, None))
 
     peaks = _peak_results(fit, err, cov, lineshape, x)
-    for peak, s, sp, fx in zip(peaks, shared, spaced, fixed):
+    for peak, s, sp, fx, cb in zip(peaks, shared, spaced, fixed, center_bounds):
         peak['shared'] = bool(s)
         peak['spaced'] = bool(sp)
         peak['fixed'] = bool(fx)
+        peak['center_bound'] = cb
     i_sp = idx['spacing']
     return {'peaks': peaks,
             'x_fit': x, 'y_total': fn(fit, x),
@@ -895,6 +909,11 @@ class PLFitter:
     the flag and energy, so a peak fixed at B = 0 stays put through the sweep.
     A fixed peak can't be in the equal-spacing group. (f no longer toggles
     matplotlib's fullscreen while the fitter runs.)
+    Press b with the cursor near a marker to select it: a gold band shows the
+    window its centre may move in (default ±8 meV around the marker), and the
+    "Centre ± (meV)" box sets that peak's half-width (blank = default). A
+    custom bound shows in the label (e.g. "1.3400 ±3"). Carry carries bounds;
+    they aren't saved. Not used for fixed or equal-spacing peaks.
     With Carry on, a spectrum at negative field (with no markers or fit yet) is seeded from
     this run's fit of the matching +|B| spectrum (same sweep folder and
     temperature) when there is one, instead of the previous file.
@@ -966,6 +985,10 @@ class PLFitter:
         # and "Lock" fits with that value instead of fitting it.
         self.lock_width = False
         self.shared_width_mev: float | None = None
+        # Peak selected with hover + b: the "Centre ± (meV)" box edits its
+        # center bound, and a shaded band shows the window it may move in.
+        self._selected: dict | None = None
+        self._sel_span = None
 
         self.fig: Figure  # created in run()
         self.ax: Axes
@@ -1023,10 +1046,14 @@ class PLFitter:
         ax_lock = self.fig.add_axes((0.36, 0.195, 0.24, 0.07))
         self.cb_lock = CheckButtons(ax_lock, ['Lock shared width'], [self.lock_width])
         self.cb_lock.on_clicked(self._on_lock)
+        ax_cb = self.fig.add_axes((0.80, 0.205, 0.08, 0.05))
+        self.tb_cb = TextBox(ax_cb, 'Centre ± (meV) ', initial='')
+        self.tb_cb.on_submit(self._on_center_bound)
 
         # Keep references so widgets aren't garbage-collected.
         self._buttons = [btn_fitg, btn_fitl, btn_clear, btn_save, btn_back, btn_next, cb_carry,
-                         *self.erange.widgets, self.btn_base, self.tb_sw, self.cb_lock]
+                         *self.erange.widgets, self.btn_base, self.tb_sw, self.cb_lock,
+                         self.tb_cb]
 
         self.fig.canvas.mpl_connect('button_press_event', self._on_click)
         self.fig.canvas.mpl_connect('key_press_event', self._on_key)
@@ -1041,11 +1068,12 @@ class PLFitter:
     # Internal: file loading
     # ------------------------------------------------------------------
 
-    def _load_current(self, seed_peaks: list[tuple[float, bool, bool, bool]] | None = None,
+    def _load_current(self, seed_peaks: list[tuple] | None = None,
                       state: dict | None = None):
         """Load files[current_idx]. `state` (a snapshot from _stash_state) restores a
         previously visited file; when editing a session, a first visit restores the
-        stored fit. `seed_peaks` (carried (x, shared, spaced, fixed) peaks) are placed on a
+        stored fit. `seed_peaks` (carried (x, shared, spaced, fixed, center_bound)
+        peaks) are placed on a
         new file, or on a revisited one left empty (no markers, no fit)."""
         self.peak_markers.clear()
         self.fit_lines.clear()
@@ -1072,6 +1100,8 @@ class PLFitter:
             self.btn_base.set(self.baseline)
 
         self.ax.cla()
+        self._sel_span = None
+        self._select(None)
         cropped = self._current_data()
         self._data_line, = self.ax.plot(cropped.energy.values, cropped.values,
                                         color='black', lw=1.2, label='Data')
@@ -1082,8 +1112,8 @@ class PLFitter:
         markers = state['markers'] if state is not None else []
         if not markers and (state is None or state['fit_result'] is None):
             markers = seed_peaks or []
-        for x, shared, spaced, fixed in markers:
-            self._add_peak(x, shared, spaced, fixed)
+        for x, shared, spaced, fixed, center_bound in markers:
+            self._add_peak(x, shared, spaced, fixed, center_bound)
         if state is not None and state['fit_result'] is not None:
             self.fit_result = state['fit_result']
             self._saved = state['saved']
@@ -1105,7 +1135,7 @@ class PLFitter:
             f'[{n}/{total}]  {filepath.name}{status}{editing}\n'
             f'{sample}  {spot}  —  '
             'left-click: place  |  right-click: remove  |  shift-click: shared width  |  '
-            'ctrl-click: equal spacing  |  f: fix energy',
+            'ctrl-click: equal spacing  |  f: fix energy  |  b: centre bound',
             fontsize=9
         )
 
@@ -1125,7 +1155,8 @@ class PLFitter:
         if result is None:
             print(f"{filepath.name}: session {n} has no stored baseline (migrated from "
                   f"fit_results.csv); markers restored, refit to save.")
-        markers = [(float(e), bool(sh), bool(sp), bool(fx)) for e, sh, sp, fx in
+        # Center bounds aren't saved, so a restored fit's peaks get the default.
+        markers = [(float(e), bool(sh), bool(sp), bool(fx), None) for e, sh, sp, fx in
                    zip(a['peak_energy'], a['peak_width_shared'], a['peak_energy_spaced'],
                        a['peak_energy_fixed'])]
         shared = [w for w, sh in zip(a['peak_width'], a['peak_width_shared']) if sh]
@@ -1137,7 +1168,7 @@ class PLFitter:
     def _stash_state(self):
         """Snapshot the current file so Back / revisiting restores it."""
         self._states[self.current_idx] = {
-            'markers':    [(m['x'], m['shared'], m['spaced'], m['fixed'])
+            'markers':    [(m['x'], m['shared'], m['spaced'], m['fixed'], m['center_bound'])
                            for m in self.peak_markers],
             'fit_result': self.fit_result,
             'saved':      self._saved,
@@ -1220,31 +1251,95 @@ class PLFitter:
             self._remove_nearest_peak(event.xdata)
 
     def _on_key(self, event):
-        if event.key == 'f' and event.inaxes is self.ax:
+        if event.inaxes is not self.ax:
+            return
+        if event.key == 'f':
             self._toggle_fixed(event.xdata)
+        elif event.key == 'b':
+            if self.peak_markers:
+                self._select(min(self.peak_markers, key=lambda m: abs(m['x'] - event.xdata)))
 
     _MARKER_COLORS = {False: 'steelblue', True: 'magenta'}   # shared width; not a tab10 fit colour
 
     _MARKER_STYLES = {False: '--', True: '-.'}   # equal-spacing group → dash-dot
 
     @staticmethod
-    def _marker_label(x: float, fixed: bool) -> str:
-        return f'{x:.4f} fixed' if fixed else f'{x:.4f}'
+    def _marker_label(m: dict) -> str:
+        label = f"{m['x']:.4f}"
+        if m['fixed']:
+            return label + ' fixed'
+        if m['center_bound'] is not None:
+            label += f" ±{m['center_bound'] * 1e3:.3g}"
+        return label
 
-    def _add_peak(self, x, shared: bool = False, spaced: bool = False, fixed: bool = False):
+    def _add_peak(self, x, shared: bool = False, spaced: bool = False, fixed: bool = False,
+                  center_bound: float | None = None):
         color = self._MARKER_COLORS[shared]
         line = self.ax.axvline(x, color=color, linestyle=self._MARKER_STYLES[spaced],
                                alpha=0.8, lw=1.8 if spaced else 1.2)
         # Blended transform: data x, axes-fraction y — stays at top regardless of zoom.
         text = self.ax.text(
-            x, 0.96, self._marker_label(x, fixed),
-            transform=self.ax.get_xaxis_transform(),
+            x, 0.96, '', transform=self.ax.get_xaxis_transform(),
             ha='center', va='top', fontsize=8, color=color, rotation=90,
             fontweight='bold' if fixed else 'normal',
         )
-        self.peak_markers.append({'x': x, 'line': line, 'text': text,
-                                  'shared': shared, 'spaced': spaced, 'fixed': fixed})
+        m = {'x': x, 'line': line, 'text': text, 'shared': shared, 'spaced': spaced,
+             'fixed': fixed, 'center_bound': center_bound}
+        text.set_text(self._marker_label(m))
+        self.peak_markers.append(m)
         self.fig.canvas.draw_idle()
+
+    def _select(self, m: dict | None):
+        """Select marker m (None = no selection): the Centre ± box shows its
+        center bound and a shaded band shows its center window."""
+        self._selected = m
+        self._updating_cb = True   # set_val fires on_submit
+        if m is None:
+            self.tb_cb.set_val('')
+        else:
+            bound = m['center_bound'] if m['center_bound'] is not None else _DEFAULT_CENTER_BOUND
+            self.tb_cb.set_val(f'{bound * 1e3:.4g}')
+        self._updating_cb = False
+        self._draw_selection()
+
+    def _draw_selection(self):
+        if self._sel_span is not None:
+            self._sel_span.remove()
+            self._sel_span = None
+        m = self._selected
+        if m is not None:
+            bound = m['center_bound'] if m['center_bound'] is not None else _DEFAULT_CENTER_BOUND
+            self._sel_span = self.ax.axvspan(m['x'] - bound, m['x'] + bound,
+                                             color='gold', alpha=0.25, zorder=0)
+            # Keep the view on the fit window when the band reaches past it.
+            self.ax.set_xlim(*self.erange.range)
+        self.fig.canvas.draw_idle()
+
+    def _on_center_bound(self, text: str):
+        if getattr(self, '_updating_cb', False):
+            return
+        m = self._selected
+        if m is None:
+            print("Press b with the cursor over a peak to select it first.")
+            self._select(None)
+            return
+        if not text.strip():
+            m['center_bound'] = None   # blank → default
+        else:
+            try:
+                value = float(text)
+                if value <= 0:
+                    raise ValueError
+            except ValueError:
+                print(f"Invalid centre bound: {text!r} (meV, > 0)")
+                self._select(m)
+                return
+            m['center_bound'] = value / 1e3
+        if m['fixed'] or m['spaced']:
+            print("Note: this peak is fixed or in the spacing group, so its centre bound "
+                  "is not used.")
+        m['text'].set_text(self._marker_label(m))
+        self._select(m)
 
     def _toggle_fixed(self, x):
         """Fix / free the energy of the marker nearest x. Fixing it while a fit is
@@ -1262,7 +1357,9 @@ class PLFitter:
                          key=lambda e: abs(e - m['x']))
             m['line'].set_xdata([m['x'], m['x']])
             m['text'].set_x(m['x'])
-        m['text'].set_text(self._marker_label(m['x'], m['fixed']))
+            if m is self._selected:
+                self._draw_selection()
+        m['text'].set_text(self._marker_label(m))
         m['text'].set_fontweight('bold' if m['fixed'] else 'normal')
         print(f"Peak at {m['x']:.5f} eV: energy {'fixed' if m['fixed'] else 'free'}.")
         self.fig.canvas.draw_idle()
@@ -1304,6 +1401,8 @@ class PLFitter:
         self.fig.canvas.draw_idle()
 
     def _remove_marker(self, marker: dict):
+        if marker is self._selected:
+            self._select(None)
         marker['line'].remove()
         marker['text'].remove()
         self.peak_markers.remove(marker)
@@ -1327,6 +1426,7 @@ class PLFitter:
         shared = [m['shared'] for m in markers]
         spaced = [m['spaced'] for m in markers]
         fixed = [m['fixed'] for m in markers]
+        center_bounds = [m['center_bound'] for m in markers]
         shared_width = None
         if self.lock_width and any(shared):
             if self.shared_width_mev is None:
@@ -1336,7 +1436,7 @@ class PLFitter:
             shared_width = self.shared_width_mev / 1e3
         result = _fit_spectrum(self.data, peak_positions, lineshape, self.erange.range,
                                baseline=self.baseline, shared=shared, shared_width=shared_width,
-                               spaced=spaced, fixed=fixed)
+                               spaced=spaced, fixed=fixed, center_bounds=center_bounds)
         if result is None:
             print("Fit failed — try adjusting peak positions or the E min/E max range.")
             return
@@ -1449,10 +1549,10 @@ class PLFitter:
         seeds = None
         if self.carry_peaks:
             if self.fit_result is not None:
-                seeds = [(p['energy'], p['shared'], p['spaced'], p['fixed'])
-                         for p in self.fit_result['peaks']]
+                seeds = [(p['energy'], p['shared'], p['spaced'], p['fixed'],
+                          p.get('center_bound')) for p in self.fit_result['peaks']]
             else:
-                seeds = [(m['x'], m['shared'], m['spaced'], m['fixed'])
+                seeds = [(m['x'], m['shared'], m['spaced'], m['fixed'], m['center_bound'])
                          for m in self.peak_markers]
 
         self.current_idx += 1
@@ -1467,7 +1567,7 @@ class PLFitter:
         # one left empty) gets carried peaks.
         self._load_current(seed_peaks=seeds, state=state)
 
-    def _mirror_seeds(self, filepath: Path) -> list[tuple[float, bool, bool, bool]] | None:
+    def _mirror_seeds(self, filepath: Path) -> list[tuple] | None:
         """Carry seeds for a negative-field spectrum: the peaks of this run's fit
         of the +|B| spectrum in the same sweep folder at the same temperature
         (the latest such file, if several). None if the field isn't negative or
@@ -1485,7 +1585,7 @@ class PLFitter:
                     and (temperature is None or state['temperature'] is None
                          or np.isclose(state['temperature'], temperature))):
                 print(f"Carry: seeding from the fit of {other.name} (+{-field:g} T).")
-                return [(p['energy'], p['shared'], p['spaced'], p['fixed'])
+                return [(p['energy'], p['shared'], p['spaced'], p['fixed'], p.get('center_bound'))
                         for p in state['fit_result']['peaks']]
         return None
 

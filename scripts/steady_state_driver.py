@@ -20,6 +20,9 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
     Press f near a marker to fix / free that peak's energy at the marker
     (after a fit, the marker first snaps to the fitted energy) — e.g. fit
     B = 0 free, fix the peak, and Carry holds it there for the sweep.
+    Press b near a marker to select it and set how far its centre may move
+    in the "Centre ± (meV)" box (default 8; gold band shows the window).
+    Carried to the next file with Carry; not saved.
     E min / E max boxes set the fit window (persists across files; the
     toolbar zoom is view-only). "Baseline" button: constant or linear.
     "Carry peaks to next file" seeds the next spectrum's markers.
