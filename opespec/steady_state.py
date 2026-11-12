@@ -882,6 +882,9 @@ class PLFitter:
     group (thick dash-dot): those peaks, in energy order, are fitted as an even
     ladder E0, E0+Δ, E0+2Δ, … with E0 and Δ fitted (Δ ± error printed and
     saved). A peak can be in both groups; Carry carries this group too.
+    With Carry on, a spectrum at negative field (first visit) is seeded from
+    this run's fit of the matching +|B| spectrum (same sweep folder and
+    temperature) when there is one, instead of the previous file.
     Set the fit window with the E min / E max boxes (persists across files;
     toolbar zoom is view-only and does not affect the fit).
     Use the buttons to fit, save, and move through files. "← Back" (and Next
@@ -1117,6 +1120,8 @@ class PLFitter:
             'saved':      self._saved,
             'range':      (self.erange.emin, self.erange.emax),
             'baseline':   self.baseline,
+            'field':       self.data.attrs.get('field'),
+            'temperature': self.data.attrs.get('temperature'),
         }
         if self.fit_result is not None and not self._saved:
             print(f"Note: fit for {self.files[self.current_idx].name} is not saved "
@@ -1389,9 +1394,35 @@ class PLFitter:
                 seeds = [(m['x'], m['shared'], m['spaced']) for m in self.peak_markers]
 
         self.current_idx += 1
+        if self.carry_peaks and self.current_idx not in self._states:
+            mirror = self._mirror_seeds(self.files[self.current_idx])
+            if mirror is not None:
+                seeds = mirror
         self._clear_fit()
         # A file visited before comes back as it was left; a new one gets carried peaks.
         self._load_current(seed_peaks=seeds, state=self._states.get(self.current_idx))
+
+    def _mirror_seeds(self, filepath: Path) -> list[tuple[float, bool, bool]] | None:
+        """Carry seeds for a negative-field spectrum: the peaks of this run's fit
+        of the +|B| spectrum in the same sweep folder at the same temperature
+        (the latest such file, if several). None if the field isn't negative or
+        no such fit exists."""
+        meta = utilities.get_metadata(filepath, defaults=False)
+        field, temperature = meta.get('field'), meta.get('temperature')
+        if field is None or field >= 0:
+            return None
+        for idx in sorted(self._states, reverse=True):
+            state = self._states[idx]
+            other = self.files[idx]
+            if (state['fit_result'] is not None and state['field'] is not None
+                    and other.parent == filepath.parent
+                    and np.isclose(state['field'], -field)
+                    and (temperature is None or state['temperature'] is None
+                         or np.isclose(state['temperature'], temperature))):
+                print(f"Carry: seeding from the fit of {other.name} (+{-field:g} T).")
+                return [(p['energy'], p['shared'], p['spaced'])
+                        for p in state['fit_result']['peaks']]
+        return None
 
     def _back(self, _event):
         if self.current_idx == 0:
