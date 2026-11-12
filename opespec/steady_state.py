@@ -3,7 +3,7 @@ Steady-state PL processing: loading, interactive fitting, and comparison.
 
 Key components:
 - load_pl_data: load a single PL CSV into an xr.DataArray (energy coords)
-- PLFitter: interactive matplotlib fitter — click to place peaks, choose
+- PLFitter: interactive matplotlib fitter — click to place peaks, toggle
   Gaussian or Lorentzian lineshape, optionally share (or lock) one width
   across chosen peaks and/or fit chosen peaks as an evenly spaced ladder,
   optionally fix chosen peaks' energies, save each fit as a session of the spectrum's processed .nc (+ PNG), with
@@ -921,17 +921,21 @@ class PLFitter:
     +|B| spectrum (same sweep folder and temperature) has a saved fit in this
     run: it re-runs that fit on the −B data, seeded at its fitted energies
     and with its constraints, centre bounds, lineshape, baseline type, fit
-    window and (if locked) shared FWHM. −B spectra already fitted in this
-    session (this run, or stored in it) are skipped. It prints a summary
+    window and (if locked) shared FWHM. −B spectra with a saved fit in this
+    session (this run, or stored in it) are skipped; an unsaved fit (such as
+    the automatic fit of carried seeds) is replaced. It prints a summary
     (R², RMSE, largest shift from the seeds, peaks stopped by a centre bound,
     failures); step onto any −B spectrum with Back/Next to review or refit it.
     Set the fit window with the E min / E max boxes (persists across files;
     toolbar zoom is view-only and does not affect the fit).
+    The "Lineshape" toggle (Gaussian / Lorentzian; persists across files)
+    sets what "Fit" fits with; changing it, like Baseline, refits a showing
+    fit. Carried peaks are fitted as soon as they're placed (not saved).
     Use the buttons to fit, save, and move through files. "← Back" (and Next
-    onto an already-visited file) restores that file's markers, fit, range and
-    baseline, so a fit can be saved or adjusted later; one left with no markers
-    and no fit gets carried peaks (if Carry is on). The title shows whether
-    the current fit has been saved.
+    onto an already-visited file) restores that file's markers, fit, range,
+    baseline and lineshape, so a fit can be saved or adjusted later; one left
+    with no markers and no fit gets carried peaks (if Carry is on). The Save
+    button reads "Saved ✓" once the current fit is saved.
 
     IMPORTANT: Must be run as a plain script, not in a VS Code interactive
     (#%%) cell — the Jupyter kernel intercepts matplotlib click events.
@@ -988,6 +992,7 @@ class PLFitter:
         self._states: dict[int, dict] = {}  # per-file snapshot for Back / revisits
         self.carry_peaks = True  # seed next file's markers from this file's peaks
         self.baseline = 'constant'  # 'constant' or 'linear'; persists across files
+        self.lineshape = 'gaussian'  # 'gaussian' or 'lorentzian'; persists across files
         # Shared-width constraint (persists across files): shift-click puts a marker
         # in the group; the box shows the last fitted shared FWHM, or a typed one,
         # and "Lock" fits with that value instead of fitting it.
@@ -1017,24 +1022,24 @@ class PLFitter:
         self.erange = _EnergyRangeControl(ax_emin, ax_emax, on_change=self._apply_range,
                                           label_min='E min (eV) ', label_max='E max (eV) ')
 
-        ax_fitg  = self.fig.add_axes((0.02, 0.04, 0.14, 0.08))
-        ax_fitl  = self.fig.add_axes((0.17, 0.04, 0.15, 0.08))
+        ax_shape = self.fig.add_axes((0.02, 0.04, 0.20, 0.08))
+        ax_fit   = self.fig.add_axes((0.23, 0.04, 0.09, 0.08))
         ax_clear = self.fig.add_axes((0.33, 0.04, 0.12, 0.08))
         ax_save  = self.fig.add_axes((0.46, 0.04, 0.09, 0.08))
         ax_back  = self.fig.add_axes((0.56, 0.04, 0.10, 0.08))
         ax_next  = self.fig.add_axes((0.67, 0.04, 0.10, 0.08))
 
-        btn_fitg  = Button(ax_fitg,  'Fit Gaussian')
-        btn_fitl  = Button(ax_fitl,  'Fit Lorentzian')
+        self.btn_shape = _CycleButton(ax_shape, 'Lineshape', self._LINESHAPES, self.lineshape,
+                                      on_change=self._on_lineshape)
+        btn_fit   = Button(ax_fit,   'Fit')
         btn_clear = Button(ax_clear, 'Clear Peaks')
-        btn_save  = Button(ax_save,  'Save')
+        self.btn_save = Button(ax_save, 'Save')
         btn_back  = Button(ax_back,  '← Back')
         btn_next  = Button(ax_next,  'Next →')
 
-        btn_fitg.on_clicked(lambda _: self._fit('gaussian'))
-        btn_fitl.on_clicked(lambda _: self._fit('lorentzian'))
+        btn_fit.on_clicked(lambda _: self._fit())
         btn_clear.on_clicked(self._clear_peaks)
-        btn_save.on_clicked(self._save)
+        self.btn_save.on_clicked(self._save)
         btn_back.on_clicked(self._back)
         btn_next.on_clicked(self._next)
 
@@ -1062,7 +1067,8 @@ class PLFitter:
         self.tb_cb.on_submit(self._on_center_bound)
 
         # Keep references so widgets aren't garbage-collected.
-        self._buttons = [btn_fitg, btn_fitl, btn_clear, btn_save, btn_back, btn_next, cb_carry,
+        self._buttons = [self.btn_shape, btn_fit, btn_clear, self.btn_save, btn_back, btn_next,
+                         cb_carry,
                          *self.erange.widgets, self.btn_base, self.tb_sw, self.cb_lock,
                          self.tb_cb, btn_auto]
 
@@ -1121,14 +1127,21 @@ class PLFitter:
         self.ax.set_ylabel('Intensity (arb. units)')
 
         markers = state['markers'] if state is not None else []
+        seeded = False
         if not markers and (state is None or state['fit_result'] is None):
             markers = seed_peaks or []
+            seeded = bool(markers)
         for x, shared, spaced, fixed, center_bound in markers:
             self._add_peak(x, shared, spaced, fixed, center_bound)
         if state is not None and state['fit_result'] is not None:
             self.fit_result = state['fit_result']
             self._saved = state['saved']
+            # The Lineshape toggle follows the restored fit, as Baseline does.
+            self.lineshape = self.fit_result['lineshape']
+            self.btn_shape.set(self.lineshape)
             self._show_fit()
+        elif seeded:
+            self._fit()   # carried seeds are fitted straight away (not saved)
         self._update_title()
         self.fig.canvas.draw_idle()
 
@@ -1137,15 +1150,14 @@ class PLFitter:
         sample = self.data.attrs.get('sample', '')
         spot   = self.data.attrs.get('spot', '')
         n, total = self.current_idx + 1, len(self.files)
-        if self.fit_result is None:
-            status = ''
-        else:
-            status = '   ✓ saved' if self._saved else '   (fit not saved)'
+        # Save status lives on the Save button, where it's hard to miss before Next.
+        saved = self.fit_result is not None and self._saved
+        self.btn_save.label.set_text('Saved ✓' if saved else 'Save')
         editing = '' if self.edit_session is None else f'   [editing session {self.edit_session}]'
         self.ax.set_title(
-            f'[{n}/{total}]  {filepath.name}{status}{editing}\n'
+            f'[{n}/{total}]  {filepath.name}{editing}\n'
             f'{sample}  {spot}  —  '
-            'left-click: place  |  right-click: remove  |  shift-click: shared width  |  '
+            'left-click: place  |  right-click: remove  |  shift-click: shared width\n'
             'ctrl-click: equal spacing  |  f: fix energy  |  b: centre bound',
             fontsize=9
         )
@@ -1218,7 +1230,15 @@ class PLFitter:
         self.baseline = baseline
         # If a fit is showing, refit with the new baseline so the two can be compared.
         if self.fit_result is not None:
-            self._fit(self.fit_result['lineshape'])
+            self._fit()
+
+    _LINESHAPES = ('gaussian', 'lorentzian')
+
+    def _on_lineshape(self, lineshape: str):
+        self.lineshape = lineshape
+        # As for the baseline: refit a showing fit so the two can be compared.
+        if self.fit_result is not None:
+            self._fit()
 
     # ------------------------------------------------------------------
     # Internal: energy range
@@ -1427,10 +1447,12 @@ class PLFitter:
     # Internal: fitting
     # ------------------------------------------------------------------
 
-    def _fit(self, lineshape: str):
+    def _fit(self):
+        """Fit the current markers with the Lineshape toggle's lineshape."""
         if not self.peak_markers:
             print("Place at least one peak marker before fitting.")
             return
+        lineshape = self.lineshape
 
         markers = sorted(self.peak_markers, key=lambda m: m['x'])
         peak_positions = [m['x'] for m in markers]
@@ -1617,10 +1639,11 @@ class PLFitter:
                 for p in state['fit_result']['peaks']]
 
     def _has_session_fit(self, filepath: Path) -> bool:
-        """Whether filepath already has a fit in this session: in this run, or
-        stored in its .nc under this session's fit number."""
+        """Whether filepath already has a saved fit in this session: saved in
+        this run, or stored in its .nc under this session's fit number. An
+        unsaved fit (e.g. the automatic fit of carried seeds) doesn't count."""
         state = self._states.get(self.files.index(filepath))
-        if state is not None and state['fit_result'] is not None:
+        if state is not None and state['fit_result'] is not None and state['saved']:
             return True
         n = self._fit_numbers.get(filepath.parent.name)
         nc = self.output_dir / filepath.parent.name / f"{filepath.stem}.nc"
@@ -1633,8 +1656,8 @@ class PLFitter:
         """Fit and save every queued −B spectrum from this run's saved fit of its
         +|B| spectrum, re-running that fit (seeds = its fitted energies, plus its
         flags, centre bounds, lineshape, baseline type, fit window and, if locked,
-        shared FWHM) on the −B data. −B spectra already fitted in this session are
-        skipped. Prints a summary; fits are in Back/Next history for review."""
+        shared FWHM) on the −B data. −B spectra with a saved fit in this session
+        are skipped; unsaved fits are replaced. Prints a summary; fits are in Back/Next history for review."""
         self._stash_state()
         rows, wrote = [], False
         for i, filepath in enumerate(self.files):
@@ -1645,7 +1668,7 @@ class PLFitter:
                     rows.append((filepath.name, 'skipped: no saved +|B| fit in this run'))
                 continue
             if self._has_session_fit(filepath):
-                rows.append((filepath.name, 'skipped: already fitted in this session'))
+                rows.append((filepath.name, 'skipped: already saved in this session'))
                 continue
             state = self._states[src]
             source = state['fit_result']
