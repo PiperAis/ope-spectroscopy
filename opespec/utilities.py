@@ -72,8 +72,10 @@ def load_config(project_name: str, settings_path: Path = _ROOT_DIR/'machine_sett
 
 #----File management----#
 
-def select_files(initial_dir: Path) -> list[Path]:
-    """Open a file browser in initial_dir; return selected CSV paths."""
+def select_files(initial_dir: Path, title: str = "Select PL data files to fit",
+                 filetypes: list[tuple[str, str]] | None = None) -> list[Path]:
+    """Open a file browser in initial_dir; return the selected paths.
+    filetypes defaults to CSV files (then all files)."""
     import tkinter as tk
     from tkinter import filedialog
 
@@ -85,9 +87,9 @@ def select_files(initial_dir: Path) -> list[Path]:
     root.attributes('-topmost', True)
     
     chosen = filedialog.askopenfilenames(
-        title="Select PL data files to fit",
+        title=title,
         initialdir=str(initial_dir),
-        filetypes=[('CSV files', '*.csv'), ('All files', '*.*')],
+        filetypes=filetypes or [('CSV files', '*.csv'), ('All files', '*.*')],
         parent=root,
     )
     root.destroy()

@@ -76,6 +76,18 @@ CONTOUR PLOT — PL intensity vs. energy and B-field (or temperature):
     raw. Save writes <processed_pl_dir>/<sample>_<tag>_contour[_subtracted].png
     (<tag> = bfield or temperature).
 
+OVERLAY — several spectra on one plot:
+    python scripts/steady_state_driver.py --project MyExperiment --mode overlay
+    python scripts/steady_state_driver.py --project MyExperiment --mode overlay --files PL/processed/2026-11-03
+
+    A file browser opens in the project's processed PL directory — pick any
+    .nc / .csv spectra (or pass --files: a directory or explicit paths). In the
+    window, "Add files…" adds more from any folder, the checkboxes show/hide
+    each spectrum, and "Remove hidden" drops the unticked ones. Live controls:
+    E min / E max, Normalize (Off → Global max → Per spectrum), S-G smoothing,
+    vertical Offset, and Data (Raw ↔ Subtracted, if every shown spectrum is
+    fitted). Save → <processed_pl_dir>/overlay_<timestamp>.png.
+
 COMPARE — tracked peak energies vs B-field from fit_results.csv:
     python scripts/steady_state_driver.py --project MyExperiment --mode compare
 
@@ -97,6 +109,7 @@ COMPARISON PLOTS — run the #%% cells below interactively in VS Code
 
 from opespec.steady_state import PLFitter, load_fit_results, plot_peak_param
 from opespec.pl_sweep import SweepContourBuilder, brightest_point
+from opespec.pl_overlay import SpectrumOverlay
 from opespec.pl_fit_compare import FitCompareViewer, track_branches, track_peak, fit_branch
 from opespec.utilities import load_config, select_files, select_directory
 from opespec.obsidian_integration import sync_pl_sweep
@@ -190,9 +203,9 @@ if __name__ == "__main__":
                         help="Explicit spectrum paths, or a single directory — skips the browser")
     parser.add_argument('--pick-files', action='store_true',
                         help="Fit mode: pick individual files instead of a whole folder")
-    parser.add_argument('--mode', choices=['fit', 'contour-plot', 'compare', 'sync'], default='fit',
+    parser.add_argument('--mode', choices=['fit', 'contour-plot', 'compare', 'overlay', 'sync'], default='fit',
                         help='What type of processing to execute. Options: fit, contour-plot, '
-                             'compare, sync (Obsidian notes only, from saved fits).')
+                             'compare, overlay, sync (Obsidian notes only, from saved fits).')
     parser.add_argument('--sweep', choices=['field', 'temperature'], default='field',
                         help="Contour-plot mode: the variable stepped across the sweep folder.")
     parser.add_argument('--edit-session', nargs='?', type=int, const=-1, default=None,
@@ -224,6 +237,17 @@ if __name__ == "__main__":
             raise SystemExit(f"No fit results yet: {csv_path}")
         print("Opening fit comparison...")
         FitCompareViewer(load_fit_results(csv_path), output_dir=Path(cfg['processed_pl_dir'])).run()
+
+    if args.mode == 'overlay':
+        processed = Path(cfg['processed_pl_dir'])
+        if args.files:
+            files = [Path(f) for f in args.files]
+        else:
+            # Cancelling opens an empty window; add spectra there.
+            files = select_files(processed, title="Select PL spectra to overlay",
+                                 filetypes=SpectrumOverlay._FILETYPES)
+        print("Opening spectrum overlay...")
+        SpectrumOverlay(files, initial_dir=processed, output_dir=processed).run()
 
     if args.mode == 'fit':
         if args.files:

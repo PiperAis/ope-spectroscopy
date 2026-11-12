@@ -14,6 +14,7 @@ Key components:
 Sweep maps (spectra vs. field, contour builder) live in pl_sweep, which
 builds on load_pl_data and _EnergyRangeControl from here. Following peaks
 through a sweep (track_branches, track_peak) lives in pl_fit_compare.
+Overlaying several spectra on one plot (SpectrumOverlay) lives in pl_overlay.
 """
 
 import warnings
@@ -24,7 +25,6 @@ import xarray as xr
 from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.optimize import least_squares
-from scipy.signal import savgol_filter as smooth
 from matplotlib.widgets import Button, TextBox, CheckButtons
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
@@ -249,30 +249,6 @@ class _CycleButton:
         self.set(self.options[(i + 1) % len(self.options)])
         self._on_change(self.value)
         self.button.ax.figure.canvas.draw_idle()
-
-
-def plot_multiple_together(directory: Path) -> None:
-    """
-    Plots all PL spectra in a directory on a single figure.
-    Applies an energy mask (1.26–1.38 eV) and Savitzky-Golay smoothing.
-    """
-    labellist = ['$MoS_2$ HS', '$WSe_2$ HS', 'Bare CrSBr']
-    plt.figure(figsize=(6, 6), dpi=400)
-    i = 0
-    for file in directory.iterdir():
-        if file.is_file():
-            data_array = load_pl_data(file)
-            maskcondition = (data_array.energy > 1.26) & (data_array.energy < 1.38)
-            da_masked = data_array.where(maskcondition, drop=True)
-            x = da_masked.energy.values
-            y = da_masked.values
-            y = np.asarray(smooth(y, 15, 3))
-            plt.plot(x, y, label=f'{labellist[i]}')
-            i += 1
-    plt.legend()
-    plt.xlabel('Energy (eV)', fontsize='large')
-    plt.ylabel('PL Intensity (arb. units)', fontsize='x-large')
-    plt.show()
 
 
 def _baseline_from_params(btype: str, bp, xc: float) -> dict:

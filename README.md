@@ -199,6 +199,25 @@ An interactive matplotlib window opens with a heatmap of PL intensity vs. energy
 
 When every spectrum in the folder has been fitted, the plot opens on baseline-subtracted data over the shared fit window, and a **Data** button switches to raw. **Save** writes the current figure to `processed_pl_dir/<sample>_<tag>_contour[_subtracted][_sg<N>].png`, where `<tag>` is `bfield` or `temperature`.
 
+### PL spectrum overlay
+
+```bash
+python /path/to/scripts/steady_state_driver.py --project CrSBr-3 --mode overlay
+```
+
+Opens a file browser in `processed_pl_dir`. Pick any processed `.nc` or raw `.csv` spectra, from any folder. Pass `--files` to skip the browser, with a directory or a list of paths. Cancelling the browser opens an empty window.
+
+All spectra are plotted on one set of axes. Legend labels are the metadata that differs between them (sample, spot, field, temperature), falling back to filenames. Live controls:
+
+- checkboxes to show or hide each spectrum. **Add files…** adds more, and **Remove hidden** drops the unticked ones.
+- lower/upper energy bound (eV)
+- a **Normalize** button that cycles Off → Global max (all shown spectra against the largest value in the window) → Per spectrum (each against its own max in the window)
+- optional Savitzky–Golay smoothing (checkbox + window in points), display only
+- **Offset**: stacks the spectra vertically, in the plotted units (0 = overlay)
+- a **Data** button for Raw ↔ Subtracted (each spectrum's latest fit). Subtracted needs every shown spectrum to be fitted; otherwise it falls back to raw and lists the unfitted ones.
+
+**Save** writes the plot to `processed_pl_dir/overlay_<YYYYmmdd-HHMMSS>.png`.
+
 ### PL fit comparison (tracked peaks vs. B-field)
 
 ```bash
@@ -227,6 +246,7 @@ After fitting, open `steady_state_driver.py` in VS Code (or your Python environm
 | `processing_state` | `ProcessingState` — linear pipeline orchestrator for TRR (noise → normalize → subtract → FFT) |
 | `steady_state` | `load_pl_data`; `PLFitter` interactive fitter; `load_fit_results` / `plot_peak_param` for cross-dataset comparison |
 | `pl_sweep` | Spectra vs. a sweep variable (`SWEEPS`: field or temperature): `SweepContourBuilder` interactive contour-plot builder; `brightest_point` |
+| `pl_overlay` | `SpectrumOverlay`: interactive overlay of any set of PL spectra (energy window, normalize, smooth, offset, raw/subtracted) |
 | `pl_fit_compare` | Cross-dataset comparison of saved fits: `track_branches` (all B = 0 peaks through a field sweep), `track_peak` (the brightest branch only), `fit_branch` (quadratic E(B) trend), `FitCompareViewer` interactive window |
 | `fitting_functions` | Shared fitting primitives (exponential decay, Lorentzian, Gaussian, peak finding) |
 | `fft_functions` | FFT-based noise analysis utilities |
