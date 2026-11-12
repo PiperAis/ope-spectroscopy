@@ -912,8 +912,9 @@ class PLFitter:
     the existing session n instead of starting a new one, replacing a
     spectrum's fit there and overwriting its fits_<n>/ plot. Each spectrum
     with a fit in session n opens with that fit drawn exactly as stored (no
-    refit), with its markers, fit window and baseline type, and its shared
-    FWHM in the box (Lock is left as set); Fit refits from there. Spectra not in session n open as usual and can be added to it.
+    refit), with its markers, fit window and baseline type; if it has a
+    shared-width group, its shared FWHM goes in the box and Lock is set as
+    it was for that fit. Fit refits from there. Spectra not in session n open as usual and can be added to it.
     A session migrated from fit_results.csv alone has no stored baseline, so
     its spectra open with markers, window and baseline type only (refit to
     save). Every experiment in files must already have a session n.
@@ -951,6 +952,7 @@ class PLFitter:
 
         self.fig: Figure  # created in run()
         self.ax: Axes
+        self.cb_lock: CheckButtons
         self.erange: _EnergyRangeControl  # fit/display range; persists across files
         self._data_line: Line2D
 
@@ -1002,12 +1004,12 @@ class PLFitter:
         self.tb_sw = TextBox(ax_sw, 'Shared FWHM (meV) ', initial='')
         self.tb_sw.on_submit(self._on_shared_width)
         ax_lock = self.fig.add_axes((0.36, 0.195, 0.24, 0.07))
-        cb_lock = CheckButtons(ax_lock, ['Lock shared width'], [self.lock_width])
-        cb_lock.on_clicked(self._on_lock)
+        self.cb_lock = CheckButtons(ax_lock, ['Lock shared width'], [self.lock_width])
+        self.cb_lock.on_clicked(self._on_lock)
 
         # Keep references so widgets aren't garbage-collected.
         self._buttons = [btn_fitg, btn_fitl, btn_clear, btn_save, btn_back, btn_next, cb_carry,
-                         *self.erange.widgets, self.btn_base, self.tb_sw, cb_lock]
+                         *self.erange.widgets, self.btn_base, self.tb_sw, self.cb_lock]
 
         self.fig.canvas.mpl_connect('button_press_event', self._on_click)
 
@@ -1034,8 +1036,10 @@ class PLFitter:
             # First visit while editing: the spectrum's fit in that session, if any.
             state = self._stored_state(filepath)
             if state is not None and state['shared_width_mev'] is not None:
-                # Show the stored shared FWHM; Lock is left as the user set it.
+                # The stored fit's shared FWHM and lock, so a refit keeps its constraint.
                 self.tb_sw.set_val(f"{state['shared_width_mev']:.4g}")
+                if state['width_locked'] != self.lock_width:
+                    self.cb_lock.set_active(0)   # fires _on_lock, which toggles lock_width
 
         # First file: full data range. Later files: keep the previous range,
         # clamped in case this file covers less energy.
@@ -1102,7 +1106,8 @@ class PLFitter:
         shared = [w for w, sh in zip(a['peak_width'], a['peak_width_shared']) if sh]
         return {'markers': markers, 'fit_result': result, 'saved': result is not None,
                 'range': (a['fit_emin'], a['fit_emax']), 'baseline': a['baseline_type'],
-                'shared_width_mev': float(shared[0]) * 1e3 if shared else None}
+                'shared_width_mev': float(shared[0]) * 1e3 if shared else None,
+                'width_locked': bool(a['shared_width_locked'])}
 
     def _stash_state(self):
         """Snapshot the current file so Back / revisiting restores it."""
