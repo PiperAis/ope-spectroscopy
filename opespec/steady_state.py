@@ -917,6 +917,14 @@ class PLFitter:
     With Carry on, a spectrum at negative field (with no markers or fit yet) is seeded from
     this run's fit of the matching +|B| spectrum (same sweep folder and
     temperature) when there is one, instead of the previous file.
+    "Auto-fit −B" fits and saves, in one go, every queued −B spectrum whose
+    +|B| spectrum (same sweep folder and temperature) has a saved fit in this
+    run: it re-runs that fit on the −B data, seeded at its fitted energies
+    and with its constraints, centre bounds, lineshape, baseline type, fit
+    window and (if locked) shared FWHM. −B spectra already fitted in this
+    session (this run, or stored in it) are skipped. It prints a summary
+    (R², RMSE, largest shift from the seeds, peaks stopped by a centre bound,
+    failures); step onto any −B spectrum with Back/Next to review or refit it.
     Set the fit window with the E min / E max boxes (persists across files;
     toolbar zoom is view-only and does not affect the fit).
     Use the buttons to fit, save, and move through files. "← Back" (and Next
@@ -1035,6 +1043,9 @@ class PLFitter:
         cb_carry.on_clicked(self._on_carry)
 
         # Same row/height as the E boxes, so it can't overlap the button row.
+        ax_auto = self.fig.add_axes((0.86, 0.135, 0.12, 0.05))
+        btn_auto = Button(ax_auto, 'Auto-fit −B')
+        btn_auto.on_clicked(self._autofit_negative)
         ax_base = self.fig.add_axes((0.62, 0.135, 0.22, 0.05))
         self.btn_base = _CycleButton(ax_base, 'Baseline', self._BASELINES, self.baseline,
                                      on_change=self._on_baseline)
@@ -1053,7 +1064,7 @@ class PLFitter:
         # Keep references so widgets aren't garbage-collected.
         self._buttons = [btn_fitg, btn_fitl, btn_clear, btn_save, btn_back, btn_next, cb_carry,
                          *self.erange.widgets, self.btn_base, self.tb_sw, self.cb_lock,
-                         self.tb_cb]
+                         self.tb_cb, btn_auto]
 
         self.fig.canvas.mpl_connect('button_press_event', self._on_click)
         self.fig.canvas.mpl_connect('key_press_event', self._on_key)
@@ -1492,8 +1503,15 @@ class PLFitter:
             print("Run a fit before saving.")
             return
 
-        filepath = self.files[self.current_idx]
-        result = self.fit_result
+        self._write_fit(self.files[self.current_idx], self.data, self.fit_result)
+        self._saved = True
+        self._update_title()
+        self.fig.canvas.draw_idle()
+
+    def _write_fit(self, filepath: Path, data: xr.DataArray, result: dict,
+                   write_csv: bool = True, verbose: bool = True):
+        """Save result (with 'lineshape') as this session's fit of filepath: its
+        processed .nc, the fit plot, and (write_csv) the regenerated fit_results.csv."""
         experiment = filepath.parent.name
         fit_number = self._fit_number(experiment)
 
@@ -1501,21 +1519,21 @@ class PLFitter:
         # this session replaces its entry); fit_results.csv is regenerated from them.
         nc_path = self.output_dir / experiment / f"{filepath.stem}.nc"
         saved_at = datetime.now().isoformat(timespec='seconds')
-        _save_processed_spectrum(nc_path, self.data, result, result['lineshape'],
+        _save_processed_spectrum(nc_path, data, result, result['lineshape'],
                                  experiment, fit_number, saved_at)
-        print(f"Saved {len(result['peaks'])} peak(s) as fit {fit_number} → {nc_path}")
+        if verbose:
+            print(f"Saved {len(result['peaks'])} peak(s) as fit {fit_number} → {nc_path}")
         _copy_folder_metadata(filepath.parent, nc_path.parent)
-        csv_path = _write_fit_results(self.output_dir)
-        print(f"Updated {csv_path}")
+        if write_csv:
+            csv_path = _write_fit_results(self.output_dir)
+            if verbose:
+                print(f"Updated {csv_path}")
 
         plot_path = self._fits_dir(experiment) / (filepath.stem + '_fit.png')
         _save_fit_plot(plot_path, result, title=f"{filepath.name} fit "
                                                 f"({result['baseline']['type']} baseline)")
-        print(f"Plot → {plot_path}")
-
-        self._saved = True
-        self._update_title()
-        self.fig.canvas.draw_idle()
+        if verbose:
+            print(f"Plot → {plot_path}")
 
     def _fits_dir(self, experiment: str) -> Path:
         """This session's <output_dir>/<experiment>/plots/fits_<n>/ folder.
@@ -1567,27 +1585,121 @@ class PLFitter:
         # one left empty) gets carried peaks.
         self._load_current(seed_peaks=seeds, state=state)
 
-    def _mirror_seeds(self, filepath: Path) -> list[tuple] | None:
-        """Carry seeds for a negative-field spectrum: the peaks of this run's fit
-        of the +|B| spectrum in the same sweep folder at the same temperature
-        (the latest such file, if several). None if the field isn't negative or
-        no such fit exists."""
+    def _mirror_source(self, filepath: Path, saved_only: bool = False) -> int | None:
+        """Index (into files) of this run's fit of the +|B| spectrum matching a
+        negative-field filepath: same sweep folder and temperature, the latest
+        such file if several. saved_only: only a saved fit counts. None if the
+        field isn't negative or there is no such fit."""
         meta = utilities.get_metadata(filepath, defaults=False)
         field, temperature = meta.get('field'), meta.get('temperature')
         if field is None or field >= 0:
             return None
         for idx in sorted(self._states, reverse=True):
             state = self._states[idx]
-            other = self.files[idx]
             if (state['fit_result'] is not None and state['field'] is not None
-                    and other.parent == filepath.parent
+                    and (state['saved'] or not saved_only)
+                    and self.files[idx].parent == filepath.parent
                     and np.isclose(state['field'], -field)
                     and (temperature is None or state['temperature'] is None
                          or np.isclose(state['temperature'], temperature))):
-                print(f"Carry: seeding from the fit of {other.name} (+{-field:g} T).")
-                return [(p['energy'], p['shared'], p['spaced'], p['fixed'], p.get('center_bound'))
-                        for p in state['fit_result']['peaks']]
+                return idx
         return None
+
+    def _mirror_seeds(self, filepath: Path) -> list[tuple] | None:
+        """Carry seeds for a negative-field spectrum: the peaks of this run's fit
+        of its +|B| spectrum (_mirror_source). None if there is none."""
+        idx = self._mirror_source(filepath)
+        if idx is None:
+            return None
+        state = self._states[idx]
+        print(f"Carry: seeding from the fit of {self.files[idx].name} (+{state['field']:g} T).")
+        return [(p['energy'], p['shared'], p['spaced'], p['fixed'], p.get('center_bound'))
+                for p in state['fit_result']['peaks']]
+
+    def _has_session_fit(self, filepath: Path) -> bool:
+        """Whether filepath already has a fit in this session: in this run, or
+        stored in its .nc under this session's fit number."""
+        state = self._states.get(self.files.index(filepath))
+        if state is not None and state['fit_result'] is not None:
+            return True
+        n = self._fit_numbers.get(filepath.parent.name)
+        nc = self.output_dir / filepath.parent.name / f"{filepath.stem}.nc"
+        if n is None or not nc.exists():
+            return False
+        with xr.open_dataset(nc) as ds:
+            return 'fit_number' in ds.dims and n in ds['fit_number'].values
+
+    def _autofit_negative(self, _event):
+        """Fit and save every queued −B spectrum from this run's saved fit of its
+        +|B| spectrum, re-running that fit (seeds = its fitted energies, plus its
+        flags, centre bounds, lineshape, baseline type, fit window and, if locked,
+        shared FWHM) on the −B data. −B spectra already fitted in this session are
+        skipped. Prints a summary; fits are in Back/Next history for review."""
+        self._stash_state()
+        rows, wrote = [], False
+        for i, filepath in enumerate(self.files):
+            src = self._mirror_source(filepath, saved_only=True)
+            if src is None:
+                meta = utilities.get_metadata(filepath, defaults=False)
+                if meta.get('field') is not None and meta['field'] < 0:
+                    rows.append((filepath.name, 'skipped: no saved +|B| fit in this run'))
+                continue
+            if self._has_session_fit(filepath):
+                rows.append((filepath.name, 'skipped: already fitted in this session'))
+                continue
+            state = self._states[src]
+            source = state['fit_result']
+            peaks = sorted(source['peaks'], key=lambda p: p['energy'])
+            seeds = [p['energy'] for p in peaks]
+            shared = [p['shared'] for p in peaks]
+            shared_width = None
+            if source['width_locked'] and any(shared):
+                shared_width = peaks[shared.index(True)]['width']
+            data = load_pl_data(filepath)
+            result = _fit_spectrum(data, seeds, source['lineshape'], state['range'],
+                                   baseline=state['baseline'], shared=shared,
+                                   shared_width=shared_width,
+                                   spaced=[p['spaced'] for p in peaks],
+                                   fixed=[p['fixed'] for p in peaks],
+                                   center_bounds=[p.get('center_bound') for p in peaks])
+            if result is None:
+                rows.append((filepath.name, 'FIT FAILED; fit by hand'))
+                continue
+            result = {**result, 'lineshape': source['lineshape']}
+            self._write_fit(filepath, data, result, write_csv=False, verbose=False)
+            wrote = True
+            self._states[i] = {
+                'markers':    [(e, p['shared'], p['spaced'], p['fixed'], p.get('center_bound'))
+                               for e, p in zip(seeds, peaks)],
+                'fit_result': result,
+                'saved':      True,
+                'range':      state['range'],
+                'baseline':   state['baseline'],
+                'field':       data.attrs.get('field'),
+                'temperature': data.attrs.get('temperature'),
+            }
+            # Shift of each free peak from its seed; flag peaks stopped by their centre bound.
+            shifts, at_bound = [], False
+            for seed, p, fit in zip(seeds, peaks, result['peaks']):
+                if p['fixed'] or p['spaced']:
+                    continue
+                shift = abs(fit['energy'] - seed)
+                shifts.append(shift)
+                bound = p.get('center_bound') or _DEFAULT_CENTER_BOUND
+                at_bound |= shift >= 0.98 * bound   # the solver stops just inside a bound
+            note = (f"R^2={result['r_squared']:.4f}  RMSE={result['rmse']:.3g}  "
+                    f"max shift={max(shifts, default=0) * 1e3:.2f} meV  "
+                    f"(from {self.files[src].name})")
+            rows.append((filepath.name, note + ('  AT CENTRE BOUND' if at_bound else '')))
+        if wrote:
+            _write_fit_results(self.output_dir)
+        print("\nAuto-fit -B:" if rows else "\nAuto-fit -B: no negative-field spectra queued.")
+        width = max((len(name) for name, _ in rows), default=0)
+        for name, note in rows:
+            print(f"  {name:<{width}}  {note}")
+        # Reload the current file, in case it was one of the spectra just fitted.
+        self._clear_fit()
+        self._load_current(state=self._states.get(self.current_idx))
 
     def _back(self, _event):
         if self.current_idx == 0:

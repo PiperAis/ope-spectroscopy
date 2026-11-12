@@ -26,6 +26,10 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
     E min / E max boxes set the fit window (persists across files; the
     toolbar zoom is view-only). "Baseline" button: constant or linear.
     "Carry peaks to next file" seeds the next spectrum's markers.
+    "Auto-fit −B": after fitting and saving the +B spectra by hand, fits and
+    saves every −B spectrum from its +|B| fit (same seeds and settings),
+    skipping ones already fitted this session, and prints a summary to
+    review from (Back/Next shows each fit).
     Buttons: Fit Gaussian | Fit Lorentzian | Clear Peaks | Save | ← Back | Next →
     Back (or Next onto a file already visited) restores that file's markers,
     fit, range and baseline; the title shows whether the fit has been saved.
