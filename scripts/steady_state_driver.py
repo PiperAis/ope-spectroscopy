@@ -17,6 +17,9 @@ INTERACTIVE FITTER — run as a plain script (NOT a #%% cell):
     Ctrl+left-click a marker to toggle it into the equal-spacing group (thick
     dash-dot): those peaks are fitted as an even ladder E0, E0+Δ, E0+2Δ, …
     with one fitted spacing Δ. A peak can be in both groups.
+    Press f near a marker to fix / free that peak's energy at the marker
+    (after a fit, the marker first snaps to the fitted energy) — e.g. fit
+    B = 0 free, fix the peak, and Carry holds it there for the sweep.
     E min / E max boxes set the fit window (persists across files; the
     toolbar zoom is view-only). "Baseline" button: constant or linear.
     "Carry peaks to next file" seeds the next spectrum's markers.

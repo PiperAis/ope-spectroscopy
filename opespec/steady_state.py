@@ -6,7 +6,7 @@ Key components:
 - PLFitter: interactive matplotlib fitter — click to place peaks, choose
   Gaussian or Lorentzian lineshape, optionally share (or lock) one width
   across chosen peaks and/or fit chosen peaks as an evenly spaced ladder,
-  save each fit as a session of the spectrum's processed .nc (+ PNG), with
+  optionally fix chosen peaks' energies, save each fit as a session of the spectrum's processed .nc (+ PNG), with
   fit_results.csv regenerated from the .nc files
 - load_fit_results / plot_peak_param: load fit_results.csv and plot any
   parameter pair across datasets (energy vs field, width vs temperature, etc.)
@@ -317,14 +317,17 @@ def _peak_results(fit: np.ndarray, err: np.ndarray, cov: np.ndarray,
 
 
 def _constraint_map(p0: list, bounds: list, shared: list[bool], shared_width: float | None,
-                    spaced: list[bool], center_bound: float = 0.008):
+                    spaced: list[bool], center_bound: float = 0.008,
+                    fixed: list[bool] | None = None):
     """
     Map between the full peak-parameter vector p = [amp, center, width] × N
     (peaks in increasing energy) and the solver's free vector q, for the
-    shared-width and equal-spacing constraints.
+    shared-width, equal-spacing and fixed-energy constraints.
 
     Shared width: peaks with shared[j] use one common width — a free
     parameter, or the constant shared_width if given.
+    Fixed energy: peaks with fixed[j] keep their center at its p0 value (a
+    constant, not a free parameter). A fixed peak can't also be spaced.
     Equal spacing: the r-th peak (in energy order) with spaced[j] has
     center E0 + r·Δ; E0 and Δ are free parameters. Needs ≥ 2 spaced peaks.
     E0 is bounded to ±center_bound around its initial value (the lowest
@@ -338,12 +341,18 @@ def _constraint_map(p0: list, bounds: list, shared: list[bool], shared_width: fl
     (None without a spacing group).
     """
     n = len(p0) // 3
+    fixed = list(fixed) if fixed is not None else [False] * n
+    if any(f and s for f, s in zip(fixed, spaced)):
+        raise ValueError("a fixed-energy peak can't be in the spacing group")
     if sum(spaced) == 1:
         spaced = [False] * n      # a ladder needs two rungs
     cols, q0, qb = [], [], []     # cols[i]: {index into p: coefficient} for free param i
     c = np.zeros(len(p0))
     for j in range(n):
-        own = [3*j] + ([] if spaced[j] else [3*j + 1]) + ([] if shared[j] else [3*j + 2])
+        if fixed[j]:
+            c[3*j + 1] = p0[3*j + 1]
+        own = ([3*j] + ([] if spaced[j] or fixed[j] else [3*j + 1])
+               + ([] if shared[j] else [3*j + 2]))
         for i in own:
             cols.append({i: 1.0}); q0.append(p0[i]); qb.append(bounds[i])
     widths = [3*j + 2 for j in range(n) if shared[j]]
@@ -376,7 +385,8 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
                   baseline: str = 'constant',
                   shared: list[bool] | None = None,
                   shared_width: float | None = None,
-                  spaced: list[bool] | None = None) -> dict | None:
+                  spaced: list[bool] | None = None,
+                  fixed: list[bool] | None = None) -> dict | None:
     """
     Fit N peaks to the spectrum within energy_range using clicked peak positions
     as initial guesses. Returns a result dict or None on failure.
@@ -393,13 +403,16 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
             order) sit at E0, E0+Δ, E0+2Δ, … with E0 and Δ fitted. Needs ≥ 2
             peaks (a single one is ignored). Result has 'spacing'/'spacing_err'
             (eV; None without a group).
+    fixed: per peak, True = hold its center at its peak_positions value
+           (energy_err = 0). A fixed peak can't also be spaced.
     With a spacing group, peak_positions must be in increasing energy order.
     """
     npk = len(peak_positions)
     shared = list(shared) if shared is not None else [False] * npk
     spaced = list(spaced) if spaced is not None else [False] * npk
-    if len(shared) != npk or len(spaced) != npk:
-        raise ValueError("shared/spaced must have one entry per peak position")
+    fixed = list(fixed) if fixed is not None else [False] * npk
+    if len(shared) != npk or len(spaced) != npk or len(fixed) != npk:
+        raise ValueError("shared/spaced/fixed must have one entry per peak position")
     if any(spaced) and list(peak_positions) != sorted(peak_positions):
         raise ValueError("with a spacing group, peak_positions must be in increasing energy order")
     if sum(spaced) == 1:
@@ -432,7 +445,7 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
     # Solver vector: free peak params (shared width once, or none if locked;
     # E0 and Δ for the spacing group), then baseline.
     q0, q_bounds, M, c, idx = _constraint_map(list(pk0), list(pk_bounds), shared,
-                                              shared_width, spaced)
+                                              shared_width, spaced, fixed=fixed)
     p0 = q0 + bl0
     bounds = q_bounds + bl_bounds
 
@@ -470,9 +483,10 @@ def _fit_spectrum(data: xr.DataArray, peak_positions: list,
     err = np.sqrt(np.clip(np.diag(cov), 0, None))
 
     peaks = _peak_results(fit, err, cov, lineshape, x)
-    for peak, s, sp in zip(peaks, shared, spaced):
+    for peak, s, sp, fx in zip(peaks, shared, spaced, fixed):
         peak['shared'] = bool(s)
         peak['spaced'] = bool(sp)
+        peak['fixed'] = bool(fx)
     i_sp = idx['spacing']
     return {'peaks': peaks,
             'x_fit': x, 'y_total': fn(fit, x),
@@ -515,7 +529,8 @@ def _copy_folder_metadata(raw_folder: Path, processed_folder: Path):
 #   per-session settings / quality (fit_number): _SESSION_FLOATS,
 #       _SESSION_STRINGS, shared_width_locked, n_peaks
 #   per-peak results (fit_number, peak): peak_<_PEAK_KEYS>, peak_width_shared,
-#       peak_energy_spaced; padded past n_peaks (NaN / 0)
+#       peak_energy_spaced, peak_energy_fixed; padded past n_peaks (NaN / 0)
+#       (files saved before peak_energy_fixed existed lack it; read as 0)
 #   attrs: filename + _METADATA_KEYS + experiment
 # Sessions migrated from fit_results.csv alone have no baseline: its
 # coefficients and the baseline/subtracted rows are NaN. fit_number 0 holds
@@ -525,7 +540,15 @@ def _copy_folder_metadata(raw_folder: Path, processed_folder: Path):
 _SESSION_FLOATS = ('baseline_c0', 'baseline_c1', 'baseline_xc', 'fit_emin', 'fit_emax',
                    'rmse', 'r_squared', 'n_points', 'dof', 'spacing', 'spacing_err')
 _SESSION_STRINGS = ('lineshape', 'baseline_type', 'saved_at')   # saved_at '' if unknown
-_PEAK_FLAGS = ('peak_width_shared', 'peak_energy_spaced')
+_PEAK_FLAGS = ('peak_width_shared', 'peak_energy_spaced', 'peak_energy_fixed')
+_PEAK_FLAG_KEYS = ('width_shared', 'energy_spaced', 'energy_fixed')   # _session_dataset peaks keys
+
+
+def _peak_flag(ds: xr.Dataset, var: str) -> xr.DataArray:
+    """A per-peak flag variable, as 0s if this file predates it."""
+    if var in ds:
+        return ds[var]
+    return xr.zeros_like(ds['peak_energy'], dtype=np.int8)
 
 
 def _session_dataset(fit_number: int, raw: xr.DataArray, settings: dict, peaks: dict,
@@ -535,8 +558,8 @@ def _session_dataset(fit_number: int, raw: xr.DataArray, settings: dict, peaks: 
     processed .nc layout (without 'raw').
 
     settings: _SESSION_FLOATS / _SESSION_STRINGS keys (missing → NaN / '') and
-    'shared_width_locked'. peaks: _PEAK_KEYS lists plus 'width_shared' and
-    'energy_spaced' (bool lists), all in peak order. baseline: evaluated on
+    'shared_width_locked'. peaks: _PEAK_KEYS lists plus _PEAK_FLAG_KEYS bool
+    lists (a missing one → all False), all in peak order. baseline: evaluated on
     raw.energy, or None if not known (migrated from fit_results.csv).
     """
     n_peaks = len(peaks['energy'])
@@ -558,9 +581,9 @@ def _session_dataset(fit_number: int, raw: xr.DataArray, settings: dict, peaks: 
     for key in _PEAK_KEYS:
         data_vars[f'peak_{key}'] = (('fit_number', 'peak'),
                                     np.asarray(peaks[key], dtype=float)[None, :])
-    for var, key in zip(_PEAK_FLAGS, ('width_shared', 'energy_spaced')):
+    for var, key in zip(_PEAK_FLAGS, _PEAK_FLAG_KEYS):
         data_vars[var] = (('fit_number', 'peak'),
-                          np.asarray(peaks[key], dtype=np.int8)[None, :])
+                          np.asarray(peaks.get(key, [False] * n_peaks), dtype=np.int8)[None, :])
     return xr.Dataset(data_vars, coords={**one, 'energy': raw.energy.values,
                                          'peak': np.arange(n_peaks)})
 
@@ -582,6 +605,7 @@ def _put_session(existing: xr.Dataset | None, raw: xr.DataArray,
                              "not merging fit sessions onto a different spectrum.")
         others = existing.drop_vars('raw').drop_sel(fit_number=session['fit_number'].values,
                                                      errors='ignore')
+        others = others.assign({var: _peak_flag(others, var) for var in _PEAK_FLAGS})
         if others.sizes['fit_number']:
             parts.insert(0, others)
     # Strings load as fixed width (<U8); as object they don't truncate longer new values.
@@ -641,6 +665,7 @@ def _session_attrs(ds: xr.Dataset, fit_number: int) -> dict:
     attrs['peak_width_shared'] = s['peak_width_shared'].values[:k].astype(np.int8)
     attrs['shared_width_locked'] = int(s['shared_width_locked'])
     attrs['peak_energy_spaced'] = s['peak_energy_spaced'].values[:k].astype(np.int8)
+    attrs['peak_energy_fixed'] = _peak_flag(s, 'peak_energy_fixed').values[:k].astype(np.int8)
     if not np.isnan(float(s['spacing'])):
         attrs['spacing'] = float(s['spacing'])
         attrs['spacing_err'] = float(s['spacing_err'])
@@ -671,6 +696,7 @@ def _stored_fit(data: xr.DataArray, ds: xr.Dataset, fit_number: int) -> dict | N
         peak['y'] = fn(params[3*j:3*(j+1)], x)
         peak['shared'] = bool(a['peak_width_shared'][j])
         peak['spaced'] = bool(a['peak_energy_spaced'][j])
+        peak['fixed'] = bool(a['peak_energy_fixed'][j])
         peaks.append(peak)
 
     def count(key):
@@ -708,6 +734,7 @@ def _result_session(result: dict, lineshape: str, saved_at: str) -> tuple[dict, 
     peaks = {key: [p[key] for p in result['peaks']] for key in _PEAK_KEYS}
     peaks['width_shared'] = [p['shared'] for p in result['peaks']]
     peaks['energy_spaced'] = [p['spaced'] for p in result['peaks']]
+    peaks['energy_fixed'] = [p.get('fixed', False) for p in result['peaks']]
     return settings, peaks
 
 
@@ -735,7 +762,8 @@ def _save_processed_spectrum(path: Path, raw: xr.DataArray, result: dict, linesh
 # fit_results.csv columns, in order.
 _CSV_COLUMNS = ['filename', 'experiment', 'fit_number', *_METADATA_KEYS, 'lineshape', 'baseline',
                 'fit_emin', 'fit_emax', 'peak_index', 'energy', 'energy_err', 'width', 'width_err',
-                'width_shared', 'width_locked', 'energy_spaced', 'spacing', 'spacing_err',
+                'width_shared', 'width_locked', 'energy_spaced', 'energy_fixed', 'spacing',
+                'spacing_err',
                 'amplitude', 'amplitude_err', 'area', 'area_err', 'n_points', 'dof', 'rmse',
                 'r_squared', 'saved_at']
 
@@ -748,6 +776,7 @@ def _session_rows(ds: xr.Dataset, experiment: str) -> list[dict]:
         return None if np.isnan(value) else cast(value)
 
     v = {name: ds[name].values for name in ds.data_vars if 'energy' not in ds[name].dims}
+    v['peak_energy_fixed'] = _peak_flag(ds, 'peak_energy_fixed').values
     rows = []
     for i, n in enumerate(ds['fit_number'].values):
         locked = bool(v['shared_width_locked'][i])
@@ -769,6 +798,7 @@ def _session_rows(ds: xr.Dataset, experiment: str) -> list[dict]:
                 'width_shared':  shared,
                 'width_locked':  shared and locked,
                 'energy_spaced': spaced,
+                'energy_fixed':  bool(v['peak_energy_fixed'][i, j]),
                 'spacing':       num(v['spacing'][i]) if spaced else None,
                 'spacing_err':   num(v['spacing_err'][i]) if spaced else None,
                 **{key: peak[key] for key in ('amplitude', 'amplitude_err', 'area', 'area_err')},
@@ -858,6 +888,13 @@ class PLFitter:
     group (thick dash-dot): those peaks, in energy order, are fitted as an even
     ladder E0, E0+Δ, E0+2Δ, … with E0 and Δ fitted (Δ ± error printed and
     saved). A peak can be in both groups; Carry carries this group too.
+    Press f with the cursor near a marker to fix / free that peak's energy
+    (bold "fixed" label): its center is held at the marker's position
+    (energy_err = 0). Fixing it while a fit is shown first moves the marker to
+    that fit's energy for the peak, so fit once free, then fix. Carry carries
+    the flag and energy, so a peak fixed at B = 0 stays put through the sweep.
+    A fixed peak can't be in the equal-spacing group. (f no longer toggles
+    matplotlib's fullscreen while the fitter runs.)
     With Carry on, a spectrum at negative field (with no markers or fit yet) is seeded from
     this run's fit of the matching +|B| spectrum (same sweep folder and
     temperature) when there is one, instead of the previous file.
@@ -992,6 +1029,10 @@ class PLFitter:
                          *self.erange.widgets, self.btn_base, self.tb_sw, self.cb_lock]
 
         self.fig.canvas.mpl_connect('button_press_event', self._on_click)
+        self.fig.canvas.mpl_connect('key_press_event', self._on_key)
+        # 'f' marks a peak's energy fixed; take it off matplotlib's fullscreen toggle.
+        plt.rcParams['keymap.fullscreen'] = [k for k in plt.rcParams['keymap.fullscreen']
+                                             if k != 'f']
 
         self._load_current()
         plt.show(block=True)
@@ -1000,11 +1041,11 @@ class PLFitter:
     # Internal: file loading
     # ------------------------------------------------------------------
 
-    def _load_current(self, seed_peaks: list[tuple[float, bool, bool]] | None = None,
+    def _load_current(self, seed_peaks: list[tuple[float, bool, bool, bool]] | None = None,
                       state: dict | None = None):
         """Load files[current_idx]. `state` (a snapshot from _stash_state) restores a
         previously visited file; when editing a session, a first visit restores the
-        stored fit. `seed_peaks` (carried (x, shared, spaced) peaks) are placed on a
+        stored fit. `seed_peaks` (carried (x, shared, spaced, fixed) peaks) are placed on a
         new file, or on a revisited one left empty (no markers, no fit)."""
         self.peak_markers.clear()
         self.fit_lines.clear()
@@ -1041,8 +1082,8 @@ class PLFitter:
         markers = state['markers'] if state is not None else []
         if not markers and (state is None or state['fit_result'] is None):
             markers = seed_peaks or []
-        for x, shared, spaced in markers:
-            self._add_peak(x, shared, spaced)
+        for x, shared, spaced, fixed in markers:
+            self._add_peak(x, shared, spaced, fixed)
         if state is not None and state['fit_result'] is not None:
             self.fit_result = state['fit_result']
             self._saved = state['saved']
@@ -1064,7 +1105,7 @@ class PLFitter:
             f'[{n}/{total}]  {filepath.name}{status}{editing}\n'
             f'{sample}  {spot}  —  '
             'left-click: place  |  right-click: remove  |  shift-click: shared width  |  '
-            'ctrl-click: equal spacing',
+            'ctrl-click: equal spacing  |  f: fix energy',
             fontsize=9
         )
 
@@ -1084,8 +1125,9 @@ class PLFitter:
         if result is None:
             print(f"{filepath.name}: session {n} has no stored baseline (migrated from "
                   f"fit_results.csv); markers restored, refit to save.")
-        markers = [(float(e), bool(sh), bool(sp)) for e, sh, sp in
-                   zip(a['peak_energy'], a['peak_width_shared'], a['peak_energy_spaced'])]
+        markers = [(float(e), bool(sh), bool(sp), bool(fx)) for e, sh, sp, fx in
+                   zip(a['peak_energy'], a['peak_width_shared'], a['peak_energy_spaced'],
+                       a['peak_energy_fixed'])]
         shared = [w for w, sh in zip(a['peak_width'], a['peak_width_shared']) if sh]
         return {'markers': markers, 'fit_result': result, 'saved': result is not None,
                 'range': (a['fit_emin'], a['fit_emax']), 'baseline': a['baseline_type'],
@@ -1095,7 +1137,8 @@ class PLFitter:
     def _stash_state(self):
         """Snapshot the current file so Back / revisiting restores it."""
         self._states[self.current_idx] = {
-            'markers':    [(m['x'], m['shared'], m['spaced']) for m in self.peak_markers],
+            'markers':    [(m['x'], m['shared'], m['spaced'], m['fixed'])
+                           for m in self.peak_markers],
             'fit_result': self.fit_result,
             'saved':      self._saved,
             'range':      (self.erange.emin, self.erange.emax),
@@ -1176,22 +1219,52 @@ class PLFitter:
         elif event.button == 3:
             self._remove_nearest_peak(event.xdata)
 
+    def _on_key(self, event):
+        if event.key == 'f' and event.inaxes is self.ax:
+            self._toggle_fixed(event.xdata)
+
     _MARKER_COLORS = {False: 'steelblue', True: 'magenta'}   # shared width; not a tab10 fit colour
 
     _MARKER_STYLES = {False: '--', True: '-.'}   # equal-spacing group → dash-dot
 
-    def _add_peak(self, x, shared: bool = False, spaced: bool = False):
+    @staticmethod
+    def _marker_label(x: float, fixed: bool) -> str:
+        return f'{x:.4f} fixed' if fixed else f'{x:.4f}'
+
+    def _add_peak(self, x, shared: bool = False, spaced: bool = False, fixed: bool = False):
         color = self._MARKER_COLORS[shared]
         line = self.ax.axvline(x, color=color, linestyle=self._MARKER_STYLES[spaced],
                                alpha=0.8, lw=1.8 if spaced else 1.2)
         # Blended transform: data x, axes-fraction y — stays at top regardless of zoom.
         text = self.ax.text(
-            x, 0.96, f'{x:.4f}',
+            x, 0.96, self._marker_label(x, fixed),
             transform=self.ax.get_xaxis_transform(),
             ha='center', va='top', fontsize=8, color=color, rotation=90,
+            fontweight='bold' if fixed else 'normal',
         )
         self.peak_markers.append({'x': x, 'line': line, 'text': text,
-                                  'shared': shared, 'spaced': spaced})
+                                  'shared': shared, 'spaced': spaced, 'fixed': fixed})
+        self.fig.canvas.draw_idle()
+
+    def _toggle_fixed(self, x):
+        """Fix / free the energy of the marker nearest x. Fixing it while a fit is
+        shown first moves the marker to the nearest fitted peak's energy, so the
+        peak is held where that fit put it."""
+        if not self.peak_markers:
+            return
+        m = min(self.peak_markers, key=lambda m: abs(m['x'] - x))
+        if not m['fixed'] and m['spaced']:
+            print("That peak is in the equal-spacing group; ctrl-click it out before fixing it.")
+            return
+        m['fixed'] = not m['fixed']
+        if m['fixed'] and self.fit_result is not None:
+            m['x'] = min((p['energy'] for p in self.fit_result['peaks']),
+                         key=lambda e: abs(e - m['x']))
+            m['line'].set_xdata([m['x'], m['x']])
+            m['text'].set_x(m['x'])
+        m['text'].set_text(self._marker_label(m['x'], m['fixed']))
+        m['text'].set_fontweight('bold' if m['fixed'] else 'normal')
+        print(f"Peak at {m['x']:.5f} eV: energy {'fixed' if m['fixed'] else 'free'}.")
         self.fig.canvas.draw_idle()
 
     def _toggle_shared(self, x):
@@ -1209,6 +1282,10 @@ class PLFitter:
         if not self.peak_markers:
             return
         m = min(self.peak_markers, key=lambda m: abs(m['x'] - x))
+        if not m['spaced'] and m['fixed']:
+            print("That peak's energy is fixed; press f over it to free it before "
+                  "adding it to the spacing group.")
+            return
         m['spaced'] = not m['spaced']
         m['line'].set_linestyle(self._MARKER_STYLES[m['spaced']])
         m['line'].set_linewidth(1.8 if m['spaced'] else 1.2)
@@ -1249,6 +1326,7 @@ class PLFitter:
         peak_positions = [m['x'] for m in markers]
         shared = [m['shared'] for m in markers]
         spaced = [m['spaced'] for m in markers]
+        fixed = [m['fixed'] for m in markers]
         shared_width = None
         if self.lock_width and any(shared):
             if self.shared_width_mev is None:
@@ -1258,7 +1336,7 @@ class PLFitter:
             shared_width = self.shared_width_mev / 1e3
         result = _fit_spectrum(self.data, peak_positions, lineshape, self.erange.range,
                                baseline=self.baseline, shared=shared, shared_width=shared_width,
-                               spaced=spaced)
+                               spaced=spaced, fixed=fixed)
         if result is None:
             print("Fit failed — try adjusting peak positions or the E min/E max range.")
             return
@@ -1279,7 +1357,9 @@ class PLFitter:
                 tags.append('shared width, locked' if result['width_locked'] else 'shared width')
             if peak['spaced']:
                 tags.append('equal spacing')
-            tag = f"  [{'; '.join(tags)}]" if tags else ''
+            if peak['fixed']:
+                tags.append('energy fixed')
+            tag =f"  [{'; '.join(tags)}]" if tags else ''
             print(f"  Peak {j+1}: E={peak['energy']:.4f} ± {peak['energy_err']:.2g} eV | "
                   f"FWHM={peak['width']:.4f} ± {peak['width_err']:.2g} eV | "
                   f"amp={peak['amplitude']:.1f} ± {peak['amplitude_err']:.2g} | "
@@ -1369,9 +1449,11 @@ class PLFitter:
         seeds = None
         if self.carry_peaks:
             if self.fit_result is not None:
-                seeds = [(p['energy'], p['shared'], p['spaced']) for p in self.fit_result['peaks']]
+                seeds = [(p['energy'], p['shared'], p['spaced'], p['fixed'])
+                         for p in self.fit_result['peaks']]
             else:
-                seeds = [(m['x'], m['shared'], m['spaced']) for m in self.peak_markers]
+                seeds = [(m['x'], m['shared'], m['spaced'], m['fixed'])
+                         for m in self.peak_markers]
 
         self.current_idx += 1
         state = self._states.get(self.current_idx)
@@ -1385,7 +1467,7 @@ class PLFitter:
         # one left empty) gets carried peaks.
         self._load_current(seed_peaks=seeds, state=state)
 
-    def _mirror_seeds(self, filepath: Path) -> list[tuple[float, bool, bool]] | None:
+    def _mirror_seeds(self, filepath: Path) -> list[tuple[float, bool, bool, bool]] | None:
         """Carry seeds for a negative-field spectrum: the peaks of this run's fit
         of the +|B| spectrum in the same sweep folder at the same temperature
         (the latest such file, if several). None if the field isn't negative or
@@ -1403,7 +1485,7 @@ class PLFitter:
                     and (temperature is None or state['temperature'] is None
                          or np.isclose(state['temperature'], temperature))):
                 print(f"Carry: seeding from the fit of {other.name} (+{-field:g} T).")
-                return [(p['energy'], p['shared'], p['spaced'])
+                return [(p['energy'], p['shared'], p['spaced'], p['fixed'])
                         for p in state['fit_result']['peaks']]
         return None
 
