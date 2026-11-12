@@ -946,7 +946,7 @@ class PLFitter:
         self.fit_result  = None   # most recent _fit_spectrum result dict
         self._saved      = False  # has the current fit_result been saved?
         self._states: dict[int, dict] = {}  # per-file snapshot for Back / revisits
-        self.carry_peaks = False  # seed next file's markers from this file's peaks
+        self.carry_peaks = True  # seed next file's markers from this file's peaks
         self.baseline = 'constant'  # 'constant' or 'linear'; persists across files
         # Shared-width constraint (persists across files): shift-click puts a marker
         # in the group; the box shows the last fitted shared FWHM, or a typed one,
