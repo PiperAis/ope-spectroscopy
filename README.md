@@ -205,7 +205,7 @@ When every spectrum in the folder has been fitted, the plot opens on baseline-su
 python /path/to/scripts/steady_state_driver.py --project CrSBr-3 --mode compare
 ```
 
-Reads `processed_pl_dir/fit_results.csv`. In each experiment (sweep folder), every peak of the B ≈ 0 fit starts a branch, which is followed field to field by nearest energy (`track_branches`). The window plots peak energy vs field: one colour per experiment, one marker per branch, `energy_err` error bars, and all fitted peaks in grey behind them for context.
+Reads `processed_pl_dir/fit_results.csv`. In each experiment (sweep folder), every peak of the B ≈ 0 fit starts a branch, which is followed field to field (`track_branches`). At each field the peaks are matched one-to-one to the branches by smallest total energy jump, with no branch jumping more than `max_jump` (default 15 meV). A branch left without a match takes its nearest peak, so a point is shared only when there are too few peaks nearby. The window plots peak energy vs field: one colour per experiment, one marker per branch, `energy_err` error bars, and all fitted peaks in grey behind them for context.
 
 - Hollow markers are fitted peaks claimed by more than one branch (peaks merged at high field).
 - A black × flags a doubtful fit: R² below `R2_MIN`, or `energy_err`/`width` above `REL_ERR_MAX` (class constants on `FitCompareViewer`).

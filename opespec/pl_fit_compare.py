@@ -4,8 +4,9 @@ follow fitted peaks through a field sweep and fit their energy trend.
 
 Key components:
 - track_branches: follow every peak of the seed fit (B = 0, or the lowest
-  temperature) through each sweep (experiment), nearest energy step to
-  step; flags points shared by more than one branch (merged peaks)
+  temperature) through each sweep (experiment), matching branches to each
+  spectrum's peaks one-to-one step to step; flags points shared by more
+  than one branch (merged peaks: a spectrum with fewer peaks than branches)
 - track_peak: the brightest branch only (largest-amplitude seed peak)
 - fit_branch: weighted polynomial E(B) = E0 + a·B (+ b·B²) for one branch
 - FitCompareViewer: interactive window — tracked branches (energy vs field)
@@ -28,6 +29,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
+from scipy.optimize import linear_sum_assignment
 import matplotlib.image as mpimg
 from matplotlib.widgets import Button, CheckButtons
 from matplotlib.figure import Figure
@@ -37,7 +39,7 @@ from .pl_sweep import _check_sweep
 
 
 def track_branches(df: pd.DataFrame, fit_number: int | None = None,
-                   sweep: str = 'field') -> pd.DataFrame:
+                   sweep: str = 'field', max_jump: float = 0.015) -> pd.DataFrame:
     """
     Follow every peak of the seed spectrum's fit through each sweep.
 
@@ -48,10 +50,15 @@ def track_branches(df: pd.DataFrame, fit_number: int | None = None,
     sweep. Warns if a field sweep has no B = 0 spectrum (seeds at the field
     nearest 0 instead), or if more than one spectrum sits at the seed point
     (the first by filename seeds; the others are matched to its peaks like
-    any other spectrum). Each seed is walked
-    outward through the sweep values (both directions for field), taking at
-    each step the peak nearest in energy to the one tracked at the previous
-    step.
+    any other spectrum). The branches are walked
+    together outward through the sweep values (both directions for field).
+    At each step, each spectrum's peaks are matched one-to-one to the
+    branches, minimizing the total energy jump from the previous step, so
+    two branches never take the same peak while another goes unused. A
+    branch is not matched to a peak more than max_jump (eV, default 15 meV)
+    from its previous energy. A branch left unmatched (fewer peaks than
+    branches, or none within max_jump) takes its nearest peak, which is
+    then shared if another branch has it. Extra peaks are left untracked.
 
     Returns one row per (branch, spectrum) with added columns:
       branch     0, 1, ... in order of seed energy, per experiment
@@ -79,18 +86,29 @@ def track_branches(df: pd.DataFrame, fit_number: int | None = None,
                           f"({f0:g} {units}): {', '.join(seed_files)}. Seeding from {seed_files[0]}.")
         seeds = np.sort(at_f0[at_f0['filename'] == seed_files[0]]['energy'].to_numpy())
 
-        for branch, e0 in enumerate(seeds):
-            for direction in (values[values > f0], values[values < f0][::-1], [f0]):
-                ref = e0
-                for f in direction:
-                    chosen = []
-                    for _, spectrum in points[points[sweep] == f].groupby('filename'):
-                        row = spectrum.loc[(spectrum['energy'] - ref).abs().idxmin()].copy()
+        for direction in (values[values > f0], values[values < f0][::-1], [f0]):
+            ref = seeds
+            for f in direction:
+                chosen = []   # per spectrum: the energy each branch took
+                for _, spectrum in points[points[sweep] == f].groupby('filename'):
+                    energies = spectrum['energy'].to_numpy()
+                    # Cost of a jump; one "no match" column per branch costs max_jump,
+                    # so a branch is left unmatched rather than jump further.
+                    cost = np.abs(ref[:, None] - energies[None, :])
+                    cost = np.hstack([cost, np.full((len(ref), len(ref)), max_jump)])
+                    rows, cols = linear_sum_assignment(cost)
+                    pick = np.full(len(ref), -1)
+                    matched = cols < len(energies)
+                    pick[rows[matched]] = cols[matched]
+                    for branch in np.flatnonzero(pick < 0):   # no peak within max_jump left
+                        pick[branch] = np.abs(energies - ref[branch]).argmin()
+                    for branch, (e0, j) in enumerate(zip(seeds, pick)):
+                        row = spectrum.iloc[j].copy()
                         row['branch'] = branch
                         row['branch_e0'] = e0
-                        chosen.append(row)
-                    tracked.extend(chosen)
-                    ref = np.mean([row['energy'] for row in chosen])
+                        tracked.append(row)
+                    chosen.append(energies[pick])
+                ref = np.mean(chosen, axis=0)
     if not tracked:
         return data.iloc[0:0].assign(branch=[], branch_e0=[], shared=[])
 
