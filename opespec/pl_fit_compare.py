@@ -50,7 +50,9 @@ def track_branches(df: pd.DataFrame, fit_number: int | None = None,
     sweep. Warns if a field sweep has no B = 0 spectrum (seeds at the field
     nearest 0 instead), or if more than one spectrum sits at the seed point
     (the first by filename seeds; the others are matched to its peaks like
-    any other spectrum). The branches are walked
+    any other spectrum). Also warns if any other sweep value has more than
+    one spectrum: every spectrum there is tracked, so each branch gets a
+    point from each. The branches are walked
     together outward through the sweep values (both directions for field).
     At each step, each spectrum's peaks are matched one-to-one to the
     branches, minimizing the total energy jump from the previous step, so
@@ -85,6 +87,14 @@ def track_branches(df: pd.DataFrame, fit_number: int | None = None,
             warnings.warn(f"{experiment}: {len(seed_files)} spectra at the seed point "
                           f"({f0:g} {units}): {', '.join(seed_files)}. Seeding from {seed_files[0]}.")
         seeds = np.sort(at_f0[at_f0['filename'] == seed_files[0]]['energy'].to_numpy())
+        n_files = points[points[sweep] != f0].groupby(sweep)['filename'].nunique()
+        repeats = n_files[n_files > 1]
+        if not repeats.empty:
+            listing = '; '.join(
+                f"{f:g} {units}: {', '.join(sorted(points[points[sweep] == f]['filename'].unique()))}"
+                for f in repeats.index)
+            warnings.warn(f"{experiment}: more than one spectrum at {listing}. All are "
+                          f"tracked, so each branch gets a point from each.")
 
         for direction in (values[values > f0], values[values < f0][::-1], [f0]):
             ref = seeds
