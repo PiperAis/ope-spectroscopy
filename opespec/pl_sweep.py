@@ -152,7 +152,8 @@ class SweepContourBuilder:
     Interactive contour (heatmap) builder for PL intensity vs. energy and a
     sweep variable: sweep='field' (default) or 'temperature' (see SWEEPS).
 
-    Live controls: colormap, lower/upper energy bound, a "Normalize" button
+    Live controls: colormap, number of contour levels (colour bands; display
+    only), lower/upper energy bound, a "Normalize" button
     that cycles Off → Global max (all spectra against the dataset's max) →
     Per spectrum (each spectrum against its own max within the E window), and an optional
     Savitzky–Golay smoothing along energy (window in points; display only,
@@ -177,6 +178,7 @@ class SweepContourBuilder:
     _VARIABLES = ('subtracted', 'raw')
     SMOOTH_POLYORDER = 3
     DEFAULT_SMOOTH_WINDOW = 11   # points along energy; must be odd and > polyorder
+    DEFAULT_LEVELS = 50          # contourf colour bands
 
     def __init__(self, files: Path | list[Path], output_dir: Path, sweep: str = 'field',
                  fit_number: int | None = None):
@@ -196,6 +198,7 @@ class SweepContourBuilder:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.cmap = self.DEFAULT_CMAP
+        self.levels = self.DEFAULT_LEVELS
         self.normalize = 'off'   # one of _NORMS
         self.smooth = False
         self.smooth_window = self.DEFAULT_SMOOTH_WINDOW
@@ -213,13 +216,14 @@ class SweepContourBuilder:
 
         has_toggle = len(self.maps) > 1
         controls_gs = outer_gs[1].subgridspec(nrows=1, ncols=2, width_ratios=[3, 1])
-        textbox_gs = controls_gs[0].subgridspec(nrows=1, ncols=4)
+        textbox_gs = controls_gs[0].subgridspec(nrows=1, ncols=5)
         side_gs = controls_gs[1].subgridspec(nrows=4 if has_toggle else 3, ncols=1)
 
         ax_cmap = self.fig.add_subplot(textbox_gs[0, 0])
         ax_emin = self.fig.add_subplot(textbox_gs[0, 1])
         ax_emax = self.fig.add_subplot(textbox_gs[0, 2])
         ax_win  = self.fig.add_subplot(textbox_gs[0, 3])
+        ax_levels = self.fig.add_subplot(textbox_gs[0, 4])
         ax_smooth = self.fig.add_subplot(side_gs[0, 0])
         ax_norm = self.fig.add_subplot(side_gs[1, 0])
         ax_save = self.fig.add_subplot(side_gs[-1, 0])
@@ -236,6 +240,9 @@ class SweepContourBuilder:
         self.tb_win = TextBox(ax_win, '', initial=str(self.smooth_window))
         ax_win.set_title('Smooth window (pts)', fontsize=9)
         self.tb_win.on_submit(self._on_window)
+        self.tb_levels = TextBox(ax_levels, '', initial=str(self.levels))
+        ax_levels.set_title('Levels', fontsize=9)
+        self.tb_levels.on_submit(self._on_levels)
         self.cb_smooth = CheckButtons(ax_smooth, [self._SMOOTH_LABEL], [self.smooth])
         self.btn_norm = _CycleButton(ax_norm, 'Normalize', self._NORMS, self.normalize,
                                      on_change=self._on_normalize, display_names=self._NORM_NAMES)
@@ -288,7 +295,7 @@ class SweepContourBuilder:
         self.ax.cla()
         data = self._current_data()
         result = data.plot.contourf(x=self.sweep, y='energy', cmap=self.cmap,
-                                     ax=self.ax, add_colorbar=False)
+                                     levels=self.levels, ax=self.ax, add_colorbar=False)
         self._cbar = self.fig.colorbar(result, ax=self.ax)
         label = 'Intensity'
         if self.variable == 'subtracted':
@@ -344,6 +351,20 @@ class SweepContourBuilder:
         self.smooth_window = window
         if self.smooth:
             self._draw()
+
+    def _on_levels(self, text):
+        try:
+            value = int(float(text))
+        except ValueError:
+            value = 0
+        if value < 2:
+            print(f"Invalid number of levels: {text!r} (must be an integer >= 2)")
+            self.tb_levels.set_val(str(self.levels))   # restore the box
+            return
+        if value == self.levels:
+            return
+        self.levels = value
+        self._draw()
 
     def _save(self, _event):
         tag = SWEEPS[self.sweep]['tag']
