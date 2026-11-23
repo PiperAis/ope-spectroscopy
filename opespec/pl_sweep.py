@@ -295,7 +295,8 @@ class SweepContourBuilder:
         self.ax.cla()
         data = self._current_data()
         result = data.plot.contourf(x=self.sweep, y='energy', cmap=self.cmap,
-                                     levels=self.levels, ax=self.ax, add_colorbar=False)
+                                     levels=self.levels, ax=self.ax, add_colorbar=False,
+                                     center=False)  # colours span data min→max, not ±max
         self._cbar = self.fig.colorbar(result, ax=self.ax)
         label = 'Intensity'
         if self.variable == 'subtracted':
